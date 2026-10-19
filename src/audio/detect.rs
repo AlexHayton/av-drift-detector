@@ -447,17 +447,18 @@ fn dedup_cells(cells: &mut Vec<AudioCell>, min_gap: f64) {
 /// `(Σ x·c, Σ x·s)` with eight independent accumulators so the loop vectorises.
 fn dot2(x: &[f32], c: &[f32], s: &[f32]) -> (f32, f32) {
     let (mut ac, mut as_) = ([0.0f32; 8], [0.0f32; 8]);
-    let chunks = x
-        .chunks_exact(8)
-        .zip(c.chunks_exact(8))
-        .zip(s.chunks_exact(8));
+    let (xs, rest) = x.as_chunks::<8>();
+    let chunks = xs
+        .iter()
+        .zip(c.as_chunks::<8>().0)
+        .zip(s.as_chunks::<8>().0);
     for ((xs, cs), ss) in chunks {
         for i in 0..8 {
             ac[i] += xs[i] * cs[i];
             as_[i] += xs[i] * ss[i];
         }
     }
-    let tail = x.len() / 8 * 8;
+    let tail = x.len() - rest.len();
     let (mut re, mut im) = (ac.iter().sum::<f32>(), as_.iter().sum::<f32>());
     for i in tail..x.len() {
         re += x[i] * c[i];
