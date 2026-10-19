@@ -2,6 +2,7 @@
 
 [![crates.io](https://img.shields.io/crates/v/av-drift-detector.svg)](https://crates.io/crates/av-drift-detector)
 [![docs.rs](https://docs.rs/av-drift-detector/badge.svg)](https://docs.rs/av-drift-detector)
+[![CI](https://github.com/AlexHayton/av-drift-detector/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/AlexHayton/av-drift-detector/actions/workflows/ci.yml?query=branch%3Amain)
 [![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
 
 **Measure audio/video sync to a fraction of a millisecond, frame by frame.**
