@@ -1,0 +1,23 @@
+name: Set up FFmpeg
+description: Installs the FFmpeg CLI and development libraries that ffmpeg-next builds against.
+runs:
+  using: composite
+  steps:
+    - name: Install FFmpeg (Linux)
+      if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y --no-install-recommends \
+          ffmpeg pkg-config clang libclang-dev \
+          libavcodec-dev libavformat-dev libavutil-dev libavfilter-dev \
+          libavdevice-dev libswscale-dev libswresample-dev
+    - name: Install FFmpeg (macOS)
+      if: runner.os == 'macOS'
+      shell: bash
+      run: brew install ffmpeg pkgconf
+    - name: Show FFmpeg version
+      shell: bash
+      run: |
+        ffmpeg -hide_banner -version | head -1
+        pkg-config --modversion libavcodec libavformat libavutil
