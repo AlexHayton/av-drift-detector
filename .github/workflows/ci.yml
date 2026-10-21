@@ -107,7 +107,8 @@ jobs:
       - uses: ./.github/actions/setup-ffmpeg
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
-      - uses: astral-sh/setup-uv@v10
+      # setup-uv publishes only full version tags (there is no floating v10).
+      - uses: astral-sh/setup-uv@v10.3.0
       # Builds the extension (maturin) and installs it with pytest.
       - run: uv sync --locked
       - run: uv run pytest bindings/python
