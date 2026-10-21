@@ -46,10 +46,10 @@ So any frame, plus the audio around it, gives the exact drift. Measuring every f
 
 - **Sub-millisecond precision.** Matches to within 0.05 ms on lossless files and 0.5 ms through H.264 + AAC. Through a simulated echoey room and a camera at an unrelated frame rate, it measures within about 0.1 ms.
 - **Any frame rate.** 23.976 to 120 fps and custom rates, kept as exact fractions (29.97 is `30000/1001`), with drop-frame timecode.
-- **Self-describing files.** The barcode carries the frame rate, and the QR code carries the frame rate, audio tone plan and timecode, so analysis needs no settings.
+- **Self-describing files.** The barcode carries the frame rate, and the QR code carries the frame rate and audio tone plan, so analysis needs no settings. Scanned with any phone camera, the QR code opens this project's page.
 - **Camera mode.** Point a phone at a screen. The analyzer finds the QR code at any angle, and recovers the display's frame timing from many camera frames. It also tolerates room echo, noise, quiet recordings and inverted microphone polarity.
 - **Per-frame reports.** Mean, median, range, jitter and clock skew (ms/min and ppm), plus dropped and repeated frames. Output as text, JSON or CSV, with a `--max-drift` exit code for CI.
-- **Library and CLI.** The pattern renderer and the audio coder/decoder are plain Rust with no FFmpeg dependency. File I/O uses [`ffmpeg-next`](https://crates.io/crates/ffmpeg-next).
+- **Library and CLI.** The pattern renderer, the audio coder/decoder and the analysis are plain Rust. Only file I/O uses [`ffmpeg-next`](https://crates.io/crates/ffmpeg-next), behind the default `ffmpeg` feature.
 
 ## Install
 

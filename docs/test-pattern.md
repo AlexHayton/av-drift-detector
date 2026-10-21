@@ -1,6 +1,6 @@
 # Test pattern specification
 
-This page describes exactly what `av-drift generate` writes, so the pattern can be reproduced or decoded by other tools. Everything below is format version **1** for the barcode and **2** for the QR payload.
+This page describes exactly what `av-drift generate` writes, so the pattern can be reproduced or decoded by other tools. Everything below is format version **1** for the barcode and **3** for the QR payload.
 
 <p align="center"><img src="media/anatomy.svg" width="800" alt="Anatomy of a test-pattern frame"></p>
 
@@ -49,21 +49,32 @@ Frame-rate codes:
 
 ### QR code
 
-A QR code in a white square below the strip on the right. The square has side `min(0.64 H, 0.42 W)`, right-aligned at 0.97 W, with its top at 0.31 H. Error correction level **Q**, a 4-module quiet zone, square modules of a whole number of pixels, centred in the square. The payload uses only QR *alphanumeric* characters:
+A QR code in a white square below the strip on the right. The square has side `min(0.64 H, 0.42 W)`, right-aligned at 0.97 W, with its top at 0.31 H. Error correction level **M**, a 4-module quiet zone, square modules of a whole number of pixels, centred in the square.
+
+The payload is a link to the project, so an ordinary phone camera that scans it opens the project's page. The stamp is the URL's fragment, which the page ignores:
+
+```text
+https://github.com/AlexHayton/av-drift-detector#AVD:3+F:00001234+R:30000/1001+A:T4X16G2K21
+```
+
+The fragment's fields are separated by `+`:
+
+| Field | Format | Meaning |
+|-------|--------|---------|
+| `AVD:3` | literal | payload format version 3 |
+| `F:` | 8 digits, zero-padded | frame number |
+| `R:` | `num/den`, or `num` when `den` is 1 | exact frame rate |
+| `A:` | `T<bands>X<tones>G<gap>K<k0>` | audio tone plan (below); version 1 always writes `T4X16G2K<k0>` |
+
+The fragment uses only QR *alphanumeric* characters, which the encoder packs in their own compact segment after the URL. All fields are fixed-width for a given file, so the QR version never changes between frames: version 5, 37×37 modules, for every built-in rate. Readers should accept any URL before the `#`.
+
+Earlier releases wrote version 2: alphanumeric fields separated by spaces, with no URL, error correction level Q, and the SMPTE timecode as a last field:
 
 ```text
 AVD:2 F:00001234 R:30000/1001 A:T4X16G2K21 T:00:00:41.04
 ```
 
-| Field | Format | Meaning |
-|-------|--------|---------|
-| `AVD:2` | literal | payload format version 2 |
-| `F:` | 8 digits, zero-padded | frame number |
-| `R:` | `num/den`, or `num` when `den` is 1 | exact frame rate |
-| `A:` | `T<bands>X<tones>G<gap>K<k0>` | audio tone plan (below); version 1 always writes `T4X16G2K<k0>` |
-| `T:` | `HH:MM:SS:FF`, or `HH:MM:SS.FF` for drop-frame | SMPTE timecode |
-
-All fields are fixed-width for a given file, so the QR version never changes between frames (version 4, 33×33 modules, for every built-in rate).
+The analyzer reads both.
 
 ### Human-readable elements
 

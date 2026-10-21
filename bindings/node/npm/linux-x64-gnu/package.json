@@ -1,0 +1,35 @@
+{
+  "name": "av-drift-detector-linux-x64-gnu",
+  "version": "0.1.0",
+  "cpu": [
+    "x64"
+  ],
+  "main": "av-drift-detector.linux-x64-gnu.node",
+  "files": [
+    "av-drift-detector.linux-x64-gnu.node"
+  ],
+  "description": "Measure audio/video sync to a fraction of a millisecond, frame by frame (Node.js bindings)",
+  "keywords": [
+    "av-sync",
+    "lipsync",
+    "audio",
+    "video",
+    "ffmpeg",
+    "latency"
+  ],
+  "license": "MIT",
+  "engines": {
+    "node": ">=20"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/AlexHayton/av-drift-detector.git",
+    "directory": "bindings/node"
+  },
+  "os": [
+    "linux"
+  ],
+  "libc": [
+    "glibc"
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "name": "av-drift-workspace",
+  "private": true,
+  "description": "pnpm workspace for av-drift-detector's JavaScript packages (see bindings/node)",
+  "license": "MIT",
+  "packageManager": "pnpm@10.6.5",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "pnpm --recursive run build",
+    "test": "pnpm --recursive run test"
+  }
+}

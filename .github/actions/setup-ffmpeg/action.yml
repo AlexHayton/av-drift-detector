@@ -1,5 +1,5 @@
 name: Set up FFmpeg
-description: Installs the FFmpeg CLI and development libraries that ffmpeg-next builds against.
+description: Installs the FFmpeg programs, and (on Linux and macOS) the development libraries that ffmpeg-next builds against.
 runs:
   using: composite
   steps:
@@ -16,8 +16,16 @@ runs:
       if: runner.os == 'macOS'
       shell: bash
       run: brew install ffmpeg pkgconf
+    # Only the programs: the Node.js and Python packages run them rather than linking.
+    - name: Install FFmpeg (Windows)
+      if: runner.os == 'Windows'
+      shell: pwsh
+      run: choco install ffmpeg --no-progress -y
     - name: Show FFmpeg version
       shell: bash
       run: |
         ffmpeg -hide_banner -version | head -1
-        pkg-config --modversion libavcodec libavformat libavutil
+        ffprobe -hide_banner -version | head -1
+        if [ "$RUNNER_OS" != Windows ]; then
+          pkg-config --modversion libavcodec libavformat libavutil
+        fi

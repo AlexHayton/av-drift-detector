@@ -7,7 +7,7 @@
 | [Getting started](getting-started.md) | Install, make a first measurement, read the report |
 | [Measuring with a camera](camera.md) | Point a phone at a screen: setup, accuracy, troubleshooting |
 | [CLI reference](cli.md) | Every option, the JSON and CSV formats, exit codes |
-| [Using the library](library.md) | The Rust API, with FFmpeg or with your own decoder |
+| [Using the library](library.md) | The Rust API, with FFmpeg or with your own decoder (no FFmpeg needed) |
 | [Test pattern specification](test-pattern.md) | The barcode, QR payload and audio code, bit by bit |
 | [How it works](how-it-works.md) | The analysis algorithms, accuracy and limitations |
 | [Development](development.md) | Building, testing, CI, versioning and releasing, regenerating the media |

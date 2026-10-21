@@ -1,0 +1,22 @@
+[package]
+name = "av-drift-node"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "Node.js bindings for av-drift-detector: the npm package av-drift-detector"
+license.workspace = true
+publish = false
+
+[lib]
+crate-type = ["cdylib"]
+# Only loadable inside Node; tested from JavaScript (test/).
+test = false
+doctest = false
+
+[dependencies]
+av-drift-detector = { path = "../../crates/av-drift-detector", version = "0.1.0", default-features = false, features = ["ffmpeg-cli", "qr-decode"] }
+napi = { version = "3.14", features = ["napi6"] }
+napi-derive = "3.6"
+
+[build-dependencies]
+napi-build = "2.6"
