@@ -95,7 +95,7 @@ jobs:
     environment: npm
     permissions:
       contents: read
-      id-token: write # provenance
+      id-token: write # trusted publishing, which also signs the provenance
     env:
       VERSION: ${{ needs.prepare.outputs.version }}
       PACKAGE: av-drift-detector
@@ -117,7 +117,8 @@ jobs:
       - if: steps.existing.outputs.published == 'false'
         uses: actions/setup-node@v7
         with:
-          node-version: 22
+          # Trusted publishing needs npm 11.5.1 or later; Node 22 comes with npm 10.
+          node-version: 24
           cache: pnpm
           registry-url: https://registry.npmjs.org
       - if: steps.existing.outputs.published == 'false'
@@ -130,12 +131,12 @@ jobs:
       # `npm publish` runs prepublishOnly (`napi pre-publish`), which checks every
       # platform has its binary, publishes the platform packages and lists them
       # as optional dependencies; then the main package is published.
+      # No token: each package trusts this workflow (trusted publishing), and npm
+      # adds provenance by itself.
       - if: steps.existing.outputs.published == 'false'
         name: Publish
         working-directory: bindings/node
         env:
-          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
-          NPM_CONFIG_PROVENANCE: "true"
           PRERELEASE: ${{ needs.prepare.outputs.prerelease }}
         run: |
           pnpm exec napi artifacts -d artifacts

@@ -158,7 +158,15 @@ Each registry needs setting up once before the workflow can publish to it. Creat
 
 **crates.io.** It only allows [trusted publishing](https://crates.io/docs/trusted-publishing) for a crate that already exists, which is why 0.1.0 was published by hand. On crates.io, open the crate's **Settings → Trusted Publishing** and add GitHub with owner `AlexHayton`, repository `av-drift-detector`, workflow `release.yml` and environment `crates-io`. Then delete the API token used for 0.1.0.
 
-**npm.** Create a granular access token that can publish new packages, and save it as the secret `NPM_TOKEN` in the `npm` environment. The first release creates `av-drift-detector` and its five platform packages, each with provenance. After that you can switch each package to [trusted publishing](https://docs.npmjs.com/trusted-publishers) (workflow `release.yml`, environment `npm`) and delete the token.
+**npm.** The workflow publishes with [trusted publishing](https://docs.npmjs.com/trusted-publishers/), so there's no token, and npm adds provenance itself. Each of the six packages (`av-drift-detector` and its five platform packages) needs a trusted publisher. On npmjs.com, add one in each package's settings: GitHub Actions, owner `AlexHayton`, repository `av-drift-detector`, workflow `release.yml`, environment `npm`, with `npm publish` allowed. With npm 11.15 or later you can do it from the command line instead (it asks for your 2FA code):
+
+```sh
+for pkg in av-drift-detector av-drift-detector-{darwin-arm64,darwin-x64,linux-arm64-gnu,linux-x64-gnu,win32-x64-msvc}; do
+  npm trust github "$pkg" --file release.yml --repo AlexHayton/av-drift-detector --env npm --allow-publish --yes
+done
+```
+
+npm only lets you add a trusted publisher to a package that already exists, which is why 0.2.1, the first version on npm, was published with a token. It also drops a new trusted publisher that hasn't published anything within 2 days, so add them shortly before a release. Once a release has published through them, set each package's **Publishing access** to "Require two-factor authentication and disallow tokens".
 
 **PyPI.** Add a [pending trusted publisher](https://docs.pypi.org/trusted-publishers/creating-a-project-through-oidc/) for the project `av-drift-detector`: owner `AlexHayton`, repository `av-drift-detector`, workflow `release.yml`, environment `pypi`. No token is needed; the first release creates the project.
 
