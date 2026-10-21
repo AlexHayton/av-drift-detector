@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 import subprocess
 import sys
@@ -59,6 +60,33 @@ def npm(name: str, version: str, **extra: object) -> str:
     return json.dumps({"name": name, "version": version, **extra}, indent=2) + "\n"
 
 
+# The version check napi-rs writes into index.js for each platform package.
+NAPI_LOADER = """\
+const binding = require('demo-darwin-arm64')
+const bindingPackageVersion = require('demo-darwin-arm64/package.json').version
+if (bindingPackageVersion !== '0.1.0' && process.env.NAPI_RS_ENFORCE_VERSION_CHECK) {
+  throw new Error(`Native binding package version mismatch, expected 0.1.0 but got ${bindingPackageVersion}.`)
+}
+"""
+
+# What `uv lock` writes for the workspace below.
+UV_LOCK = """\
+version = 1
+revision = 3
+requires-python = ">=3.11"
+
+[manifest]
+members = [
+    "demo",
+]
+
+[[package]]
+name = "demo"
+version = "0.1.0"
+source = { virtual = "bindings/python" }
+"""
+
+
 FIXTURE = {
     "Cargo.toml": '[package]\nname = "demo"\nversion = "0.1.0"\nedition = "2021"\n'
     'repository = "https://github.com/example/demo"\n\n[dependencies]\n',
@@ -71,12 +99,16 @@ FIXTURE = {
     "docs/use.md": '```toml\ndemo = { version = "0.1", default-features = false }\n```\n',
     "bindings/ffi/Cargo.toml": '[package]\nname = "demo-ffi"\nversion = "0.0.0"\npublish = false\n\n'
     '[dependencies]\ndemo = { path = "../..", version = "0.1.0" }\n',
-    "bindings/node/package.json": npm("demo", "0.1.0", optionalDependencies={"demo-darwin-arm64": "0.1.0"}),
+    "bindings/node/package.json": npm("demo", "0.1.0", main="index.js", napi={"binaryName": "demo"},
+                                      optionalDependencies={"demo-darwin-arm64": "0.1.0"}),
     "bindings/node/package-lock.json": json.dumps(
         {"name": "demo", "version": "0.1.0", "lockfileVersion": 3,
          "packages": {"": {"name": "demo", "version": "0.1.0"}}}, indent=2) + "\n",
+    "bindings/node/index.js": NAPI_LOADER,
     "bindings/node/npm/darwin-arm64/package.json": npm("demo-darwin-arm64", "0.1.0"),
-    "bindings/python/pyproject.toml": '[project]\nname = "demo"\nversion = "0.1.0"\n',
+    "pyproject.toml": '[tool.uv.workspace]\nmembers = ["bindings/python"]\n',
+    "uv.lock": UV_LOCK,
+    "bindings/python/pyproject.toml": '[project]\nname = "demo"\nversion = "0.1.0"\nrequires-python = ">=3.11"\n',
     "bindings/maturin/pyproject.toml": '[project]\nname = "demo-native"\ndynamic = ["version"]\n',
 }
 
@@ -118,6 +150,7 @@ class RepositoryTests(unittest.TestCase):
     def versions(self) -> dict[str, str]:
         node = json.loads(self.read("bindings/node/package.json"))
         lock = json.loads(self.read("bindings/node/package-lock.json"))
+        loader = self.read("bindings/node/index.js")
         return {
             "cargo": version.toml_string(self.read("Cargo.toml"), "version")[1],
             "lock": self.read("Cargo.lock").split('name = "demo"\nversion = "')[1].split('"')[0],
@@ -127,7 +160,9 @@ class RepositoryTests(unittest.TestCase):
             "node-dep": node["optionalDependencies"]["demo-darwin-arm64"],
             "node-lock": f'{lock["version"]} {lock["packages"][""]["version"]}',
             "node-platform": json.loads(self.read("bindings/node/npm/darwin-arm64/package.json"))["version"],
+            "node-loader": " ".join(re.findall(r"!== '([^']+)'", loader) + re.findall(r"expected (\S+) but", loader)),
             "python": version.toml_string(self.read("bindings/python/pyproject.toml"), "version")[1],
+            "uv-lock": self.read("uv.lock").split('name = "demo"\nversion = "')[1].split('"')[0],
         }
 
     def test_release_sequence(self):
@@ -148,7 +183,8 @@ class RepositoryTests(unittest.TestCase):
         self.run_script("bump", "minor", "--date", "2026-02-03")
         self.assertEqual(self.versions(), {
             "cargo": "0.2.0", "lock": "0.2.0", "ffi-dep": "0.2.0", "docs": "0.2", "node": "0.2.0",
-            "node-dep": "0.2.0", "node-lock": "0.2.0 0.2.0", "node-platform": "0.2.0", "python": "0.2.0",
+            "node-dep": "0.2.0", "node-lock": "0.2.0 0.2.0", "node-platform": "0.2.0",
+            "node-loader": "0.2.0 0.2.0", "python": "0.2.0", "uv-lock": "0.2.0",
         })
         self.assertEqual(self.git("log", "-1", "--format=%s"), "Release v0.2.0")
         self.assertEqual(self.git("status", "--porcelain"), "")
@@ -162,6 +198,7 @@ class RepositoryTests(unittest.TestCase):
         self.run_script("bump", "1.0.0-rc.1")
         found = self.versions()
         self.assertEqual((found["cargo"], found["python"], found["docs"]), ("1.0.0-rc.1", "1.0.0rc1", "0.2"))
+        self.assertEqual((found["node-loader"], found["uv-lock"]), ("1.0.0-rc.1 1.0.0-rc.1", "1.0.0rc1"))
         self.run_script("check", "--tag", "v1.0.0-rc.1")
         self.assertIn("doesn't match", self.run_script("check", "--tag", "v1.0.0", ok=False).stderr)
 
@@ -207,6 +244,17 @@ class RepositoryTests(unittest.TestCase):
 
         self.write("bindings/python/pyproject.toml", '[project]\nname = "demo"\nversion = "0.1.1"\n')
         self.assertIn("disagree", self.run_script("check", ok=False).stderr)
+
+    @unittest.skipUnless(shutil.which("uv"), "uv isn't installed")
+    def test_stale_uv_lock_stops_the_bump(self):
+        # A change to the Python project that wasn't followed by `uv lock`.
+        self.write("bindings/python/pyproject.toml", '[project]\nname = "demo"\nversion = "0.1.0"\n'
+                   'requires-python = ">=3.12"\n')
+        self.git("commit", "--quiet", "--all", "-m", "Need Python 3.12")
+        before = {path: self.read(path) for path in FIXTURE}
+        self.assertIn("uv.lock (run `uv lock`)", self.run_script("bump", "0.1.0", ok=False).stderr)
+        self.assertEqual({path: self.read(path) for path in FIXTURE}, before)
+        self.assertEqual(self.git("tag", "--list"), "")
 
 
 if __name__ == "__main__":

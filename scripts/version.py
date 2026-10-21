@@ -14,8 +14,9 @@ Manifests are the files git knows about (committed, or new and not ignored):
 - every Cargo.toml with a [package] version, unless it has publish = false;
 - every package.json with a version, and the package-lock.json beside it;
 - every pyproject.toml with a static [project] version.
-Cargo.lock, version requirements on this repository's own packages, and
-`<crate> = "X.Y"` dependency snippets in Markdown files are updated with them.
+Cargo.lock, uv.lock, the loader napi-rs generates for a Node.js package (index.js),
+version requirements on this repository's own packages, and `<crate> = "X.Y"`
+dependency snippets in Markdown files are updated with them.
 """
 
 from __future__ import annotations
@@ -42,6 +43,8 @@ SEMVER_RE = re.compile(
 )
 PEP440_RE = re.compile(r"(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:(a|b|rc)(0|[1-9]\d*))?")
 NPM_DEP_SECTIONS = ("dependencies", "devDependencies", "optionalDependencies", "peerDependencies")
+# The napi-rs loader refuses a platform package whose version differs from its own.
+NAPI_LOADER_RE = re.compile(r"(bindingPackageVersion !== '|package version mismatch, expected )[^'\s]+")
 
 
 class Error(Exception):
@@ -220,11 +223,17 @@ def bump_npm_ref(spec: str, old: Version, new: Version) -> str:
     return spec
 
 
+def python_name(name: str) -> str:
+    """A Python project name as lockfiles spell it (PEP 503)."""
+    return re.sub(r"[-_.]+", "-", name).lower()
+
+
 def plan_edits(files: list[str], manifests: list[Manifest], new: Version) -> dict[str, str]:
-    """New contents of every file the bump changes (manifests, lockfiles, docs)."""
+    """New contents of every file the bump changes (manifests, lockfiles, generated code, docs)."""
     old = current_version(manifests)
     crates = [m.name for m in manifests if m.kind == "cargo"]
     npm_names = {m.name for m in manifests if m.kind == "npm"}
+    python_names = [python_name(m.name) for m in manifests if m.kind == "python"]
     edits: dict[str, str] = {}
 
     def text(path: str) -> str:
@@ -244,6 +253,10 @@ def plan_edits(files: list[str], manifests: list[Manifest], new: Version) -> dic
                     if dep in npm_names:
                         data[section][dep] = bump_npm_ref(spec, old, new)
             edits[m.path] = dump_json(data, content)
+            if "napi" in data:
+                loader = (Path(m.path).parent / data.get("main", "index.js")).as_posix()
+                if loader in files:
+                    edits[loader] = NAPI_LOADER_RE.sub(lambda v: v[1] + new.semver(), text(loader))
             lock = str(Path(m.path).with_name("package-lock.json"))
             if lock in files:
                 lock_text = text(lock)
@@ -281,6 +294,15 @@ def plan_edits(files: list[str], manifests: list[Manifest], new: Version) -> dic
                 pattern = rf'(?m)^([ \t]*{crate}[ \t]*=[ \t]*(?:\{{[ \t]*version[ \t]*=[ \t]*)?")(\d+(?:\.\d+){{0,2}})(")'
                 updated = re.sub(pattern, snippet, updated)
         if updated != content:
+            edits[path] = updated
+
+    for path in files:
+        if Path(path).name == "uv.lock":
+            updated = text(path)
+            for project in map(re.escape, python_names):
+                # Workspace members: `name = "x"\nversion = "0.1.0"\nsource = { editable = "path" }`.
+                pattern = rf'(?m)^(name = "{project}"\nversion = ")([^"]*)("\nsource = \{{ (?:editable|virtual) = )'
+                updated = re.sub(pattern, lambda m: m[1] + new.pep440() + m[3], updated)
             edits[path] = updated
 
     return {path: content for path, content in edits.items() if content != read(path)}
@@ -362,15 +384,23 @@ def git_problems() -> list[str]:
     return problems
 
 
-def cargo_lock_ok() -> bool:
-    if not Path("Cargo.lock").exists() or not shutil.which("cargo"):
-        return True
-    result = subprocess.run(
-        ["cargo", "metadata", "--locked", "--offline", "--format-version", "1"],
-        capture_output=True,
-        text=True,
-    )
-    return result.returncode == 0
+def stale_lockfiles(files: list[str]) -> list[str]:
+    """Lockfiles their package manager rejects, each with the command that fixes it.
+
+    A package manager that isn't installed is skipped: CI checks the lockfiles too."""
+    checks = []
+    if Path("Cargo.lock").exists() and shutil.which("cargo"):
+        checks.append(("Cargo.lock", "cargo update --workspace",
+                       ["cargo", "metadata", "--locked", "--offline", "--format-version", "1"]))
+    if shutil.which("uv"):
+        for lock in (path for path in files if Path(path).name == "uv.lock"):
+            directory = str(Path(lock).parent)
+            checks.append((lock, "uv lock", ["uv", "lock", "--locked", "--offline", "--directory", directory]))
+    return [
+        f"{lock} (run `{fix}`)"
+        for lock, fix, command in checks
+        if subprocess.run(command, capture_output=True, text=True).returncode != 0
+    ]
 
 
 def bump(target: str, dry_run: bool, push: bool, date: str | None) -> None:
@@ -414,12 +444,14 @@ def bump(target: str, dry_run: bool, push: bool, date: str | None) -> None:
     originals = {path: read(path) for path in edits}
     for path, content in edits.items():
         write(path, content)
-    if not cargo_lock_ok():
+    stale = stale_lockfiles(files)
+    if stale:
         for path, content in originals.items():
             write(path, content)
+        rows = "\n".join(f"  {lock}" for lock in stale)
         raise Error(
-            "Cargo.lock doesn't match the manifests after the bump, so nothing was changed. "
-            "Run `cargo update --workspace` and try again."
+            f"lockfiles don't match the manifests after the bump, so nothing was changed:\n{rows}\n"
+            "Fix them, commit, and try again."
         )
 
     run("git", "add", "--", *sorted(edits))

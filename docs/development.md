@@ -130,7 +130,7 @@ Every package built from this repository shares one version number: the Rust cra
 - every `package.json` with a version, and the `package-lock.json` beside it;
 - every `pyproject.toml` with a fixed `[project]` version. One with `dynamic = ["version"]` (maturin reads it from `Cargo.toml`) is left alone.
 
-It also updates `Cargo.lock`, version requirements between this repository's own packages, and dependency snippets such as `av-drift-detector = { version = "0.1" }` in the docs. A new binding's manifest is picked up as soon as it's added to git. CI fails if any two disagree.
+It also updates `Cargo.lock`, `uv.lock`, the version check in the loader napi-rs generates (`bindings/node/index.js`), version requirements between this repository's own packages, and dependency snippets such as `av-drift-detector = { version = "0.1" }` in the docs. Before committing, it asks `cargo` and `uv` (if they're installed) whether the lockfiles are up to date, and undoes the bump if not. A new binding's manifest is picked up as soon as it's added to git. CI fails if any two disagree.
 
 ## Releasing
 
