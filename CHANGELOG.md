@@ -4,6 +4,8 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-10-21
+
 ### Added
 
 - **Node.js package** `av-drift-detector` (`bindings/node`, built with napi-rs): `analyze` and `generate`, plus `analyzeFrames`, `readFrame`, `PatternRenderer` and `synthesizeAudio` for frames and audio in memory. Promise-based, with TypeScript types. Prebuilt for macOS, Linux and Windows. See [its README](bindings/node/README.md).
@@ -29,5 +31,6 @@ First release.
 - Text, JSON and CSV reports, analysis windows (`--offset`, `--duration`), and `--max-drift` for use in CI.
 - The `av_drift_detector` library, with FFmpeg-free pattern rendering, audio synthesis and audio detection.
 
-[Unreleased]: https://github.com/AlexHayton/av-drift-detector/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/AlexHayton/av-drift-detector/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/AlexHayton/av-drift-detector/releases/tag/v0.2.0
 [0.1.0]: https://github.com/AlexHayton/av-drift-detector/releases/tag/v0.1.0
