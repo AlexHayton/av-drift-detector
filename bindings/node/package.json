@@ -1,6 +1,6 @@
 {
   "name": "av-drift-detector",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "description": "Measure audio/video sync to a fraction of a millisecond, frame by frame (Node.js bindings)",
   "keywords": [
     "av-sync",

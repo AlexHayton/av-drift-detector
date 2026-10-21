@@ -4,6 +4,12 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.2.1] - 2026-10-21
+
+### Fixed
+
+- 0.2.0 was tagged but never published: its release stopped when the Node.js and Python packages' checks found files still marked 0.1.0. This release publishes everything listed under 0.2.0.
+
 ## [0.2.0] - 2026-10-21
 
 ### Added
@@ -31,6 +37,7 @@ First release.
 - Text, JSON and CSV reports, analysis windows (`--offset`, `--duration`), and `--max-drift` for use in CI.
 - The `av_drift_detector` library, with FFmpeg-free pattern rendering, audio synthesis and audio detection.
 
-[Unreleased]: https://github.com/AlexHayton/av-drift-detector/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/AlexHayton/av-drift-detector/compare/v0.2.1...HEAD
+[0.2.1]: https://github.com/AlexHayton/av-drift-detector/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/AlexHayton/av-drift-detector/releases/tag/v0.2.0
 [0.1.0]: https://github.com/AlexHayton/av-drift-detector/releases/tag/v0.1.0
