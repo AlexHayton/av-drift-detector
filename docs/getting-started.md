@@ -2,6 +2,28 @@
 
 ## Install
 
+There are three ways in: the `av-drift` command (Rust), and packages for [Node.js](../bindings/node/README.md) and [Python](../bindings/python/README.md). The command links FFmpeg's libraries; the packages run the `ffmpeg` and `ffprobe` programs instead.
+
+### Node.js or Python
+
+```sh
+npm install av-drift-detector     # Node.js 20 or later
+pip install av-drift-detector     # Python 3.11 or later
+```
+
+Prebuilt for macOS (Apple silicon and Intel), Linux (x64 and arm64, glibc 2.17 or later) and Windows (x64). Reading and writing files needs FFmpeg 5.1 or later installed, with `ffmpeg` and `ffprobe` on your `PATH` (or set `AV_DRIFT_FFMPEG` and `AV_DRIFT_FFPROBE` to their paths). Writing H.264 test files needs an FFmpeg built with libx264, as the usual packages are:
+
+| | |
+|-|-|
+| macOS | `brew install ffmpeg` |
+| Debian / Ubuntu | `sudo apt install ffmpeg` |
+| Fedora | `sudo dnf install ffmpeg` (from RPM Fusion; Fedora's own `ffmpeg-free` lacks libx264) |
+| Windows | `winget install Gyan.FFmpeg` or `choco install ffmpeg` |
+
+Functions that work on frames and audio in memory don't need FFmpeg at all.
+
+### The `av-drift` command
+
 `av-drift-detector` uses [`ffmpeg-next`](https://crates.io/crates/ffmpeg-next) to read and write media. That crate builds against your system's FFmpeg libraries, so you need FFmpeg's development files, `pkg-config`, and `libclang` (for `bindgen`). Any FFmpeg from 4.x to 9.x works; CI covers 6.1 (Ubuntu 24.04) and the latest Homebrew release.
 
 **macOS**
@@ -30,7 +52,7 @@ Then install the `av-drift` command (Rust 1.88 or later):
 ```sh
 cargo install av-drift-detector
 # or, from a checkout:
-cargo install --path .
+cargo install --path crates/av-drift-detector
 ```
 
 The `ffmpeg` command itself isn't needed to generate or analyze. It's only used by the test suite and the examples below that put a file through a pipeline.

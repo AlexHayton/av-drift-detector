@@ -171,6 +171,25 @@ class RepositoryTests(unittest.TestCase):
         self.assertIn("1.0.0-rc.1 -> 1.0.0", self.run_script("bump", "patch", "--dry-run").stdout)
         self.assertEqual({path: self.read(path) for path in FIXTURE}, before)
 
+    def test_virtual_workspace(self):
+        # The crate in a subdirectory, sharing the workspace's repository URL.
+        self.write("crates/demo/Cargo.toml", '[package]\nname = "demo"\nversion = "0.1.0"\n'
+                   'edition = "2021"\nrepository.workspace = true\n')
+        self.write("crates/demo/src/lib.rs", "")
+        self.write("Cargo.toml", '[workspace]\nmembers = ["crates/demo"]\n\n'
+                   '[workspace.package]\nrepository = "https://github.com/example/demo"\n')
+        self.git("rm", "--quiet", "src/lib.rs")
+        self.git("add", "--all")
+        self.git("commit", "--quiet", "-m", "Workspace")
+        self.assertIn("0.1.0: 4 manifest(s) agree", self.run_script("check").stdout)
+
+        self.run_script("bump", "0.1.0", "--date", "2026-01-02")
+        self.assertIn("[0.1.0]: https://github.com/example/demo/releases/tag/v0.1.0\n", self.read("CHANGELOG.md"))
+        self.note("- More.")
+        self.run_script("bump", "minor", "--date", "2026-02-03")
+        self.assertIn('name = "demo"\nversion = "0.2.0"', self.read("crates/demo/Cargo.toml"))
+        self.assertIn("[0.2.0]: https://github.com/example/demo/compare/v0.1.0...v0.2.0\n", self.read("CHANGELOG.md"))
+
     def test_refusals(self):
         self.assertIn("older", self.run_script("bump", "0.0.9", ok=False).stderr)
         self.assertIn("not a supported version", self.run_script("bump", "0.2", ok=False).stderr)

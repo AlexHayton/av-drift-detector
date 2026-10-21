@@ -1,0 +1,49 @@
+[build-system]
+requires = ["maturin>=1.15,<2"]
+build-backend = "maturin"
+
+[project]
+name = "av-drift-detector"
+version = "0.1.0"
+description = "Measure audio/video sync to a fraction of a millisecond, frame by frame"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.11"
+keywords = ["av-sync", "lipsync", "audio", "video", "ffmpeg", "latency"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Rust",
+    "Topic :: Multimedia :: Sound/Audio :: Analysis",
+    "Topic :: Multimedia :: Video",
+    "Typing :: Typed",
+]
+
+[project.urls]
+Repository = "https://github.com/AlexHayton/av-drift-detector"
+Documentation = "https://github.com/AlexHayton/av-drift-detector/tree/main/bindings/python"
+Changelog = "https://github.com/AlexHayton/av-drift-detector/blob/main/CHANGELOG.md"
+
+[dependency-groups]
+dev = ["pytest>=9"]
+
+[tool.maturin]
+python-source = "python"
+module-name = "av_drift_detector._native"
+features = ["pyo3/extension-module"]
+exclude = ["python/**/__pycache__/**"]
+
+[tool.uv]
+# Rebuild the extension when the Rust code changes.
+cache-keys = [
+    { file = "pyproject.toml" },
+    { file = "Cargo.toml" },
+    { file = "src/**/*.rs" },
+    { file = "../../crates/av-drift-detector/Cargo.toml" },
+    { file = "../../crates/av-drift-detector/src/**/*.rs" },
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]

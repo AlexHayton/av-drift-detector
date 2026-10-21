@@ -287,12 +287,16 @@ def plan_edits(files: list[str], manifests: list[Manifest], new: Version) -> dic
 
 
 def repository_url(files: list[str]) -> str | None:
+    """The `repository` of the root Cargo.toml: a workspace's shared one, or its package's."""
     if "Cargo.toml" not in files:
         return None
     text = read("Cargo.toml")
-    span = toml_section(text, "package")
-    m = span and toml_string(text[span[0] : span[1]], "repository")
-    return re.sub(r"(\.git)?/?$", "", m[1]) if m else None
+    for header in ("workspace.package", "package"):
+        span = toml_section(text, header)
+        m = span and toml_string(text[span[0] : span[1]], "repository")
+        if m:
+            return re.sub(r"(\.git)?/?$", "", m[1])
+    return None
 
 
 def section_span(text: str, title: str) -> tuple[int, int] | None:

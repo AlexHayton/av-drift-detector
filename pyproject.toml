@@ -1,0 +1,11 @@
+# uv workspace for av-drift-detector's Python packages (see bindings/python).
+# The release scripts in scripts/ need only the standard library.
+
+[tool.uv.workspace]
+members = ["bindings/python"]
+
+[tool.uv.sources]
+av-drift-detector = { workspace = true }
+
+[dependency-groups]
+dev = ["av-drift-detector", "pytest>=9"]

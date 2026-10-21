@@ -2,3 +2,14 @@
 *.profraw
 .DS_Store
 __pycache__/
+
+# JavaScript (pnpm workspace)
+node_modules/
+*.node
+
+# Python (uv workspace)
+.venv/
+*.so
+*.pyd
+dist/
+.pytest_cache/

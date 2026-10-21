@@ -2,15 +2,17 @@
 
 ```toml
 [dependencies]
-av-drift-detector = { version = "0.1", default-features = false, features = ["qr-decode"] }
+av-drift-detector = { version = "0.1", default-features = false, features = ["ffmpeg", "qr-decode"] }
 ```
 
 | Feature | Default | What it adds |
 |---------|---------|--------------|
+| `ffmpeg` | yes | Reading and writing media files: `analyze`, `generate` and `media::{decode, encode}`, via [`ffmpeg-next`](https://crates.io/crates/ffmpeg-next). |
+| `ffmpeg-cli` | no | The same by running the `ffmpeg` and `ffprobe` programs (FFmpeg 5.1+), with nothing linked: `media::ffmpeg_cli::{analyze, generate}`. Results match the linked path frame for frame. The Node.js and Python packages use this. |
 | `qr-decode` | yes | Reading QR codes (via [`rqrr`](https://crates.io/crates/rqrr)): the fallback for damaged barcodes, and how camera captures are read. |
 | `cli` | yes | The `av-drift` command and its dependencies (`clap`, `indicatif`, `serde_json`, `anyhow`). Turn it off when using the library. |
 
-Building needs FFmpeg's development libraries; see [Getting started](getting-started.md#install). The minimum Rust version is 1.88.
+With the `ffmpeg` feature, building needs FFmpeg's development libraries; see [Getting started](getting-started.md#install). Without it, nothing links FFmpeg, and the crate builds for targets such as Android and WebAssembly: everything below works except `analyze` and `generate` (the [Android app](android.md) uses it this way). The minimum Rust version is 1.88.
 
 ## Generate a test file
 
@@ -66,11 +68,11 @@ fn main() -> Result<(), av_drift_detector::Error> {
 
 ## Bring your own decoder
 
-`analyze` decodes with FFmpeg. If you already have frames and audio from somewhere else (a capture card SDK, WebRTC, GStreamer), build a `MediaScan` and call `analyze_scan`:
+`analyze` decodes with FFmpeg. If you already have frames and audio from somewhere else (a capture card SDK, WebRTC, GStreamer, a phone's camera), build a `MediaScan` and call `analyze_scan`. Neither needs the `ffmpeg` feature:
 
 ```rust
 use av_drift_detector::analyze::{AnalyzeOptions, analyze_scan};
-use av_drift_detector::media::decode::{AudioTrack, MediaScan, VideoSample};
+use av_drift_detector::media::{AudioTrack, MediaScan, VideoSample};
 use av_drift_detector::pattern::canvas::LumaView;
 use av_drift_detector::pattern::decode_frame;
 
@@ -97,6 +99,10 @@ fn measure(frames: &[(f64, Vec<u8>)], width: usize, height: usize, audio: Vec<f3
 ```
 
 Timestamps for video and audio must share one clock (seconds). Audio is mono `f32` at any sample rate.
+
+If your decoder hands over audio in timestamped chunks, `media::AudioTrackBuilder` assembles them into one continuous `AudioTrack` the way `analyze` does: gaps are filled with silence, overlaps dropped, and timestamp rounding ignored.
+
+To read a camera image, `pattern::qr::locate(&view, roi)` returns the QR stamp with the code's corners, and can search just a region (`LumaView::crop` makes one without copying). Searching around where the code was last seen is several times faster than searching the whole frame.
 
 ## Use the pattern without FFmpeg
 
@@ -151,4 +157,4 @@ Everything returns `av_drift_detector::Result<T>`, with `av_drift_detector::Erro
 - invalid options (`InvalidOption`, `InvalidFrameRate`, `InvalidTime`);
 - unsupported input (`MissingStream`, `Unsupported`);
 - a capture whose frame rate can't be determined (`UnknownFrameRate`);
-- FFmpeg and I/O failures (`Ffmpeg`, `Io`).
+- FFmpeg and I/O failures (`Ffmpeg`, with the `ffmpeg` feature, and `Io`).

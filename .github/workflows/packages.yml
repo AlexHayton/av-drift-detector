@@ -1,0 +1,115 @@
+name: Packages
+
+# Builds the npm and PyPI packages for every platform. The Release workflow
+# runs this and publishes what it builds; run it by hand to try a build.
+# The packages run the user's own `ffmpeg` and `ffprobe`, so nothing here
+# needs FFmpeg: the builds are plain Rust.
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  npm:
+    name: npm (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-latest, target: aarch64-apple-darwin, smoke: true }
+          - { os: macos-latest, target: x86_64-apple-darwin }
+          # glibc 2.17, so the binaries load on older distributions.
+          - { os: ubuntu-24.04, target: x86_64-unknown-linux-gnu, flags: --use-napi-cross, smoke: true }
+          - { os: ubuntu-24.04, target: aarch64-unknown-linux-gnu, flags: --use-napi-cross }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, smoke: true }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - uses: pnpm/action-setup@v6
+      - uses: actions/setup-node@v7
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - name: Build
+        working-directory: bindings/node
+        shell: bash
+        run: pnpm exec napi build --platform --release --target ${{ matrix.target }} ${{ matrix.flags }}
+      - name: Smoke test
+        if: matrix.smoke
+        working-directory: bindings/node
+        run: >-
+          node -e "const a = require('./index.js');
+          const r = new a.PatternRenderer({ width: 640, height: 360 });
+          if (a.readFrame(r.render(5), 640, 360).frameId !== 5) process.exit(1)"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: npm-${{ matrix.target }}
+          path: bindings/node/*.node
+          if-no-files-found: error
+
+  python:
+    name: PyPI wheel (${{ matrix.target }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: macos-latest, target: aarch64-apple-darwin, smoke: true }
+          - { os: macos-latest, target: x86_64-apple-darwin }
+          - { os: ubuntu-24.04, target: x86_64-unknown-linux-gnu, smoke: true }
+          - { os: ubuntu-24.04, target: aarch64-unknown-linux-gnu }
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, smoke: true }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+      # One abi3 wheel per platform, for Python 3.11 and later; manylinux on Linux.
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: build
+          target: ${{ matrix.target }}
+          manylinux: auto
+          args: --release --out dist
+          working-directory: bindings/python
+      - name: Smoke test
+        if: matrix.smoke
+        shell: bash
+        run: |
+          python -m pip install bindings/python/dist/*.whl
+          python -c "import av_drift_detector as a
+          r = a.PatternRenderer(width=640, height=360)
+          assert a.read_frame(r.render(5), 640, 360)['frame_id'] == 5"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: python-${{ matrix.target }}
+          path: bindings/python/dist/*.whl
+          if-no-files-found: error
+
+  sdist:
+    name: PyPI source distribution
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+      - uses: PyO3/maturin-action@v1
+        with:
+          command: sdist
+          args: --out dist
+          working-directory: bindings/python
+      - uses: actions/upload-artifact@v7
+        with:
+          name: python-sdist
+          path: bindings/python/dist/*.tar.gz
+          if-no-files-found: error

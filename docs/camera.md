@@ -22,7 +22,7 @@ Drift    mean +40.03 ms  median +40.03 ms  min +39.99 ms  max +40.10 ms  stddev 
 
 In a digital copy, every video frame is pixel-aligned with the original and timestamped when it starts. A camera breaks both assumptions, and the analyzer handles each:
 
-- **The picture is at an angle, scaled, blurred and noisy.** The barcode strip can't be found, so frames are read from the **QR code**, which can be located anywhere in the image. The QR code carries everything else needed: the frame number, the exact frame rate and the audio tone plan. You don't have to tell the analyzer anything.
+- **The picture is at an angle, scaled, blurred and noisy.** The barcode strip can't be found, so frames are read from the **QR code**, which can be located anywhere in the image. The QR code carries everything else needed: the frame number, the exact frame rate and the audio tone plan. You don't have to tell the analyzer anything. (Scanned with an ordinary camera app, the same code opens the project's page.)
 - **The camera samples the display at arbitrary moments.** A camera frame that shows pattern frame N was taken at some unknown point while N was on screen. Taken alone, that's only accurate to one frame (33 ms at 30 fps). But every observation "N was showing at time t" bounds when the display switched frames. The analyzer intersects those bounds over all the frames it sees, which recovers the display's timeline to a fraction of a frame. It reports how tight that is as **display timing known to ±x ms**.
 - **The sound crosses a room.** Echoes, background noise, a quiet recording, even an inverted microphone: the audio detector handles all of these (see [How it works](how-it-works.md)).
 

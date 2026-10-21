@@ -1,0 +1,21 @@
+[package]
+name = "av-drift-python"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+description = "Python bindings for av-drift-detector: the native module of the PyPI package av-drift-detector"
+license.workspace = true
+publish = false
+
+[lib]
+name = "av_drift_python"
+crate-type = ["cdylib"]
+# Only loadable inside Python; tested with pytest (tests/).
+test = false
+doctest = false
+
+[dependencies]
+av-drift-detector = { path = "../../crates/av-drift-detector", version = "0.1.0", default-features = false, features = ["ffmpeg-cli", "qr-decode"] }
+# The stable ABI from Python 3.11: one wheel for every later version.
+pyo3 = { version = "0.30", features = ["abi3-py311"] }
+serde_json = "1.0"
