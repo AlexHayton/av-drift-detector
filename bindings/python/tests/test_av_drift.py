@@ -97,3 +97,13 @@ def test_frames_and_audio_in_memory() -> None:
     assert report["capture"] == "file"
     assert report["summary"]["measured"] > 60
     assert report["summary"]["mean_ms"] == pytest.approx(12, abs=0.01)
+
+
+def test_music_and_length_options() -> None:
+    with_music = avd.synthesize_audio(4800, fps="25")
+    assert with_music != avd.synthesize_audio(4800, fps="25", music=False)
+    # The info line shows the length only when it's given.
+    plain = avd.PatternRenderer(fps="25", width=640, height=360).render(0)
+    assert plain != avd.PatternRenderer(fps="25", width=640, height=360, duration=6).render(0)
+    with pytest.raises(avd.AvDriftError, match="duration must be positive"):
+        avd.PatternRenderer(duration=0)

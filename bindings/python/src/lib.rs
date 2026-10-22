@@ -74,7 +74,7 @@ fn analyze(
 #[pyfunction]
 #[pyo3(signature = (
     output, *, fps="30", duration=10.0, width=1280, height=720, sample_rate=48000,
-    video_codec="h264", audio_codec="aac", audio_offset=0.0, on_progress=None,
+    video_codec="h264", audio_codec="aac", audio_offset=0.0, music=true, on_progress=None,
 ))]
 #[allow(clippy::too_many_arguments)]
 fn generate<'py>(
@@ -88,6 +88,7 @@ fn generate<'py>(
     video_codec: &str,
     audio_codec: &str,
     audio_offset: f64,
+    music: bool,
     on_progress: Option<Py<PyAny>>,
 ) -> PyResult<Bound<'py, PyDict>> {
     let mut opts = avd::GenerateOptions::new(output, frame_rate(fps)?, duration);
@@ -97,6 +98,7 @@ fn generate<'py>(
     opts.video_codec = video_codec.parse().map_err(error)?;
     opts.audio_codec = audio_codec.parse().map_err(error)?;
     opts.audio_delay = audio_offset;
+    opts.music = music;
 
     // The callback's first exception stops further calls and is raised at the end.
     let mut raised: Option<PyErr> = None;
@@ -264,11 +266,24 @@ struct PatternRenderer {
 #[pymethods]
 impl PatternRenderer {
     #[new]
-    #[pyo3(signature = (*, fps="30", width=1280, height=720, sample_rate=48000))]
-    fn new(fps: &str, width: u32, height: u32, sample_rate: u32) -> PyResult<Self> {
-        let tones = avd::audio::ToneCode::new(frame_rate(fps)?, sample_rate).map_err(error)?;
-        let inner = avd::pattern::PatternRenderer::new(width as usize, height as usize, tones)
+    #[pyo3(signature = (*, fps="30", width=1280, height=720, sample_rate=48000, duration=None))]
+    fn new(
+        fps: &str,
+        width: u32,
+        height: u32,
+        sample_rate: u32,
+        duration: Option<f64>,
+    ) -> PyResult<Self> {
+        let rate = frame_rate(fps)?;
+        let tones = avd::audio::ToneCode::new(rate, sample_rate).map_err(error)?;
+        let mut inner = avd::pattern::PatternRenderer::new(width as usize, height as usize, tones)
             .map_err(error)?;
+        if let Some(seconds) = duration {
+            if !(seconds.is_finite() && seconds > 0.0) {
+                return Err(error(format!("duration must be positive, got {seconds}")));
+            }
+            inner = inner.with_total_frames(rate.frames_in(seconds));
+        }
         Ok(PatternRenderer {
             inner,
             width,
@@ -305,7 +320,7 @@ impl PatternRenderer {
 
 /// The test pattern's audio as native-endian float32 bytes.
 #[pyfunction]
-#[pyo3(signature = (count, *, fps="30", sample_rate=48000, delay=0.0, start=0))]
+#[pyo3(signature = (count, *, fps="30", sample_rate=48000, delay=0.0, start=0, music=true))]
 fn synthesize_audio<'py>(
     py: Python<'py>,
     count: usize,
@@ -313,9 +328,18 @@ fn synthesize_audio<'py>(
     sample_rate: u32,
     delay: f64,
     start: u64,
+    music: bool,
 ) -> PyResult<Bound<'py, PyBytes>> {
     let code = avd::audio::ToneCode::new(frame_rate(fps)?, sample_rate).map_err(error)?;
-    let samples = py.detach(|| avd::audio::synthesize(&code, delay, start, count));
+    let samples = py.detach(|| {
+        let mut synth = avd::audio::ToneSynth::new(code, delay).starting_at(start);
+        if music {
+            synth = synth.with_music();
+        }
+        let mut samples = vec![0.0; count];
+        synth.fill(&mut samples);
+        samples
+    });
     let bytes: Vec<u8> = samples.iter().flat_map(|s| s.to_ne_bytes()).collect();
     Ok(PyBytes::new(py, &bytes))
 }

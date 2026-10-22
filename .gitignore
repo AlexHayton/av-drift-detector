@@ -13,3 +13,6 @@ node_modules/
 *.pyd
 dist/
 .pytest_cache/
+
+# Clips rendered by scripts/render_clips.py
+/clips/

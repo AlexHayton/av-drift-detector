@@ -25,7 +25,7 @@ Reading and writing files runs the `ffmpeg` and `ffprobe` programs, so install F
 
 ## Files
 
-- **`generate(output, *, fps="30", duration=10.0, width=1280, height=720, sample_rate=48000, video_codec="h264", audio_codec="aac", audio_offset=0.0, on_progress=None)`** writes a test video and returns a summary. `audio_offset` (seconds) deliberately delays the audio; negative makes it early. `on_progress(frames_done, frames_total)` is called about once a percent. FFV1 video and PCM audio need `.mov` or `.mkv`.
+- **`generate(output, *, fps="30", duration=10.0, width=1280, height=720, sample_rate=48000, video_codec="h264", audio_codec="aac", audio_offset=0.0, music=True, on_progress=None)`** writes a test video and returns a summary. `audio_offset` (seconds) deliberately delays the audio; negative makes it early. `music` plays a tune under the tones that doesn't affect analysis. `on_progress(frames_done, frames_total)` is called about once a percent. FFV1 video and PCM audio need `.mov` or `.mkv`.
 - **`analyze(path, *, offset=0.0, duration=None, fps=None, use_qr=True, capture="auto")`** measures every frame of a capture. `offset` and `duration` choose a window in seconds, and `capture` is `"auto"`, `"file"` (a digital copy) or `"camera"` (a phone filming a screen).
 
 Reports are the dicts `av-drift analyze --json` writes ([format](https://github.com/AlexHayton/av-drift-detector/blob/main/docs/cli.md#json---json)), typed as `DriftReport`, so `json.dump(report, f)` saves the CLI's format:
@@ -54,8 +54,8 @@ report = avd.analyze_frames(frames, audio, width=width, height=height)
 Frame times and `start_time` must be on the same clock, in seconds.
 
 - **`read_frame(luma, width, height, stride=None, *, try_qr=True)`** reads a frame's stamp (barcode, then QR code), or returns None.
-- **`PatternRenderer(*, fps="30", width=1280, height=720, sample_rate=48000).render(frame_id)`** draws a test-pattern frame as luma bytes.
-- **`synthesize_audio(count, *, fps="30", sample_rate=48000, delay=0.0, start=0)`** makes the test audio as an `array("f")`.
+- **`PatternRenderer(*, fps="30", width=1280, height=720, sample_rate=48000, duration=None).render(frame_id)`** draws a test-pattern frame as luma bytes. With `duration` (seconds), the info line shows the file's length.
+- **`synthesize_audio(count, *, fps="30", sample_rate=48000, delay=0.0, start=0, music=True)`** makes the test audio as an `array("f")`, with the music unless `music` is false.
 
 Errors raise `AvDriftError`. Slow calls release the GIL, so they run in parallel from threads.
 

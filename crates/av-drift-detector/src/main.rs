@@ -49,6 +49,9 @@ struct GenerateArgs {
     /// Deliberately delay the audio (e.g. 78.5ms, or -40ms for early audio).
     #[arg(long, default_value = "0", value_parser = parse_time_arg, allow_hyphen_values = true)]
     audio_offset: f64,
+    /// Leave out the music under the code tones.
+    #[arg(long)]
+    no_music: bool,
     /// Output file (.mp4, .mov or .mkv).
     #[arg(short, long)]
     output: PathBuf,
@@ -164,6 +167,7 @@ fn generate(args: GenerateArgs) -> Result<ExitCode> {
     (opts.width, opts.height) = args.size;
     opts.sample_rate = args.sample_rate;
     opts.audio_delay = args.audio_offset;
+    opts.music = !args.no_music;
     opts.video_codec = match args.video_codec {
         VideoCodecArg::H264 => VideoCodec::H264,
         VideoCodecArg::Ffv1 => VideoCodec::Ffv1,

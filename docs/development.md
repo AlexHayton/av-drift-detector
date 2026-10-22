@@ -10,7 +10,7 @@ A monorepo: one Rust workspace, a pnpm workspace and a uv workspace, sharing one
 | `bindings/node/` | the Node.js package (napi-rs): a Rust crate and the npm package `av-drift-detector` |
 | `bindings/python/` | the Python package (PyO3 + maturin): a Rust crate and the PyPI package `av-drift-detector` |
 | `docs/` | the guides |
-| `scripts/` | version bumps and release tags (`version.py`, standard-library Python) |
+| `scripts/` | version bumps and release tags (`version.py`), ready-made clips (`render_clips.py`); standard-library Python |
 | `Cargo.toml` | the Rust workspace: members, shared metadata, profiles |
 | `package.json`, `pnpm-workspace.yaml` | the pnpm workspace |
 | `pyproject.toml` | the uv workspace |
@@ -96,24 +96,36 @@ From the repository root, with a release build:
 cargo build --release
 AVD=target/release/av-drift
 
-# Sample video (6 s, 30 fps, H.264 + AAC)
-$AVD generate --fps 30 --duration 6 -o docs/media/sample.mp4
+# Sample video: the dancer's whole 8-second routine (30 fps, H.264 + AAC)
+$AVD generate --fps 30 --duration 8 -o docs/media/sample.mp4
 
-# Animated GIF: 25 fps so GIF frame delays (in 1/100 s) are exact; rendered at GIF size, lossless
-$AVD generate --fps 25 --duration 2.4 --size 640x360 --video-codec ffv1 --audio-codec pcm -o /tmp/gif-src.mkv
+# Animated GIF of the routine: 25 fps so GIF frame delays (in 1/100 s) are exact; rendered at GIF size, lossless
+$AVD generate --fps 25 --duration 8 --size 640x360 --video-codec ffv1 --audio-codec pcm -o /tmp/gif-src.mkv
 ffmpeg -i /tmp/gif-src.mkv \
-  -vf "split[a][b];[a]palettegen=max_colors=8:reserve_transparent=0[p];[b][p]paletteuse=dither=none" \
+  -vf "split[a][b];[a]palettegen=max_colors=16:reserve_transparent=0:stats_mode=full[p];[b][p]paletteuse=dither=none:diff_mode=rectangle" \
   -loop 0 docs/media/pattern.gif
 
 # Spectrogram of the first second of audio
 ffmpeg -t 1 -i docs/media/sample.mp4 \
-  -lavfi "showspectrumpic=s=900x420:legend=1:fscale=lin:start=500:stop=2800:color=viridis:gain=4" \
+  -lavfi "showspectrumpic=s=900x420:legend=1:fscale=lin:start=500:stop=2800:color=viridis:gain=10" \
   -frames:v 1 -update 1 docs/media/spectrogram.png
 ```
 
-`docs/media/anatomy.svg` is a frame of the sample (at 1.4 s, frame 42) with labelled outlines. The frame is embedded as a base64 PNG, so the SVG renders on its own anywhere.
+`docs/media/anatomy.svg` is a frame of the sample (at 4.67 s, frame 140, with the hat in the air) with labelled outlines at the positions `Layout::new(1280, 720)` gives. The frame is embedded as a base64 PNG, so the SVG renders on its own anywhere.
 
 The media aren't in the published crate, which only packages `crates/av-drift-detector` (plus the README and licence). On crates.io, the README's relative links and images resolve against the `repository` URL, so they're served from GitHub.
+
+## Ready-made clips
+
+`scripts/render_clips.py` renders a folder of 30-second test clips at the most common frame sizes and rates (4K to 360p, cinema, ultrawide, portrait, square and 4:3; 1080p at every broadcast and web rate), for hosting somewhere people can download them:
+
+```sh
+scripts/render_clips.py --list            # what it would render
+scripts/render_clips.py                   # all of them, into clips/ (gitignored)
+scripts/render_clips.py --only 1080x1920  # just the matching ones
+```
+
+It builds `av-drift` first. Clips already in the folder are kept, so an interrupted run carries on where it stopped (`--force` renders them again). It also writes `manifest.json` (each clip's size, rate, length, bytes and SHA-256, and the `av-drift` version and commit) and `SHA256SUMS`. Upload the folder as it is. Render the clips from a release, so the manifest's version means something.
 
 ## Versioning
 

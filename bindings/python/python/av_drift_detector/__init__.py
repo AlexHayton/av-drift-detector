@@ -186,13 +186,16 @@ def generate(
     video_codec: Literal["h264", "ffv1"] = "h264",
     audio_codec: Literal["aac", "pcm"] = "aac",
     audio_offset: float = 0.0,
+    music: bool = True,
     on_progress: Callable[[int, int], object] | None = None,
 ) -> GenerateSummary:
     """Writes a test video (``.mp4``, ``.mov`` or ``.mkv``).
 
     Every frame shows its number as a barcode, a QR code and timecode, and
-    every frame's worth of audio carries it as tones. ``audio_offset``
-    (seconds) deliberately delays the audio; negative makes it early.
+    every frame's worth of audio carries it as tones. A stick figure dances
+    on the frame, and ``music`` (up to about 60 fps) plays under the tones
+    without affecting analysis. ``audio_offset`` (seconds) deliberately
+    delays the audio; negative makes it early.
     ``on_progress(frames_done, frames_total)`` is called about once a percent.
     FFV1 video and PCM audio need ``.mov`` or ``.mkv``. Encodes with the
     ``ffmpeg`` program; H.264 needs a build with libx264.
@@ -207,6 +210,7 @@ def generate(
         video_codec=video_codec,
         audio_codec=audio_codec,
         audio_offset=audio_offset,
+        music=music,
         on_progress=on_progress,
     )
 
@@ -252,13 +256,22 @@ def analyze_frames(
 
 
 def synthesize_audio(
-    count: int, *, fps: str = "30", sample_rate: int = 48_000, delay: float = 0.0, start: int = 0
+    count: int,
+    *,
+    fps: str = "30",
+    sample_rate: int = 48_000,
+    delay: float = 0.0,
+    start: int = 0,
+    music: bool = True,
 ) -> array.array[float]:
     """The test pattern's audio: ``count`` mono float32 samples from sample
-    ``start``, delayed by ``delay`` seconds (positive = late).
+    ``start``, delayed by ``delay`` seconds (positive = late), with the music
+    :func:`generate` adds unless ``music`` is false.
     """
     samples = array.array("f")
     samples.frombytes(
-        _native.synthesize_audio(count, fps=fps, sample_rate=sample_rate, delay=delay, start=start)
+        _native.synthesize_audio(
+            count, fps=fps, sample_rate=sample_rate, delay=delay, start=start, music=music
+        )
     )
     return samples

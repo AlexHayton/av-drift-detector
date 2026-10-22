@@ -25,7 +25,7 @@ Reading and writing files runs the `ffmpeg` and `ffprobe` programs, so install F
 
 ## Files
 
-- **`generate(options, onProgress?)`** writes a test video and resolves to a summary. Only `output` is required; the others default to `fps: '30'`, `duration: 10` (seconds), 1280×720, `sampleRate: 48000`, `videoCodec: 'h264'`, `audioCodec: 'aac'` and `audioOffset: 0` (seconds; positive delays the audio). `onProgress({ framesDone, framesTotal })` is called about once a percent. FFV1 video and PCM audio need `.mov` or `.mkv`.
+- **`generate(options, onProgress?)`** writes a test video and resolves to a summary. Only `output` is required; the others default to `fps: '30'`, `duration: 10` (seconds), 1280×720, `sampleRate: 48000`, `videoCodec: 'h264'`, `audioCodec: 'aac'`, `audioOffset: 0` (seconds; positive delays the audio) and `music: true` (a tune under the tones that doesn't affect analysis). `onProgress({ framesDone, framesTotal })` is called about once a percent. FFV1 video and PCM audio need `.mov` or `.mkv`.
 - **`analyze(path, options?)`** measures every frame of a capture. Options: `offset` and `duration` (a window, in seconds), `fps` (override the pattern's rate), `useQr`, and `capture`: `'auto'`, `'file'` (a digital copy) or `'camera'` (a phone filming a screen).
 
 Both run on libuv's thread pool and return promises. Reports have the content of `av-drift analyze --json` ([format](https://github.com/AlexHayton/av-drift-detector/blob/main/docs/cli.md#json---json)) with camelCase names:
@@ -57,8 +57,8 @@ const report = await avd.analyzeFrames({
 Frame times and `startTime` must be on the same clock, in seconds.
 
 - **`readFrame(luma, width, height, stride?, tryQr?)`** reads a frame's stamp (barcode, then QR code), or returns `null`.
-- **`new PatternRenderer({ fps, width, height, sampleRate }).render(frameId)`** draws a test-pattern frame as a luma `Buffer`.
-- **`synthesizeAudio({ count, fps, sampleRate, delay, start })`** makes the test audio as a `Float32Array`.
+- **`new PatternRenderer({ fps, width, height, sampleRate, duration }).render(frameId)`** draws a test-pattern frame as a luma `Buffer`. With `duration` (seconds), the info line shows the file's length.
+- **`synthesizeAudio({ count, fps, sampleRate, delay, start, music })`** makes the test audio as a `Float32Array`, with the music unless `music` is `false`.
 
 Async functions reject on bad arguments; `readFrame` and the renderer throw.
 

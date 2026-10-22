@@ -4,6 +4,19 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+### Added
+
+- **A dancer.** A stick figure in shades and a top hat dances on every frame with a cane and a striped scarf, on a light-up floor beside a boombox: an 8-second, 16-beat routine at 120 bpm, in time with the frame-in-second ticks. It's physics-driven: a Verlet-simulated scarf, a hat thrown so that gravity lands it back on his head, spring-loaded robot arms, a ballistic star jump with a sprung landing, and notes and dust under drag. Like the rest of the frame, it's drawn from the frame number alone. Smooth motion also makes judder and dropped frames easy to see.
+- **Music.** An oom-pah tune plays under the code tones, in step with the dancer. Every note is a harmonic of the frame rate below the lowest code tone and changes only at frame boundaries, so the decoder doesn't hear it: decoding with and without it gives the same results to under a microsecond. It plays at up to 60 fps (a bugle version at 48 to 60 fps). It's written for this project and dedicated to the public domain (CC0). Turn it off with `av-drift generate --no-music`, `GenerateOptions::music`, or the bindings' `music` option. In the library, it's `audio::Music` and `ToneSynth::with_music`.
+- **An info line** under the frame-in-second ticks shows the frame size, rate and length, such as `1920×1080 · 29.97 fps · 30 s`. `PatternRenderer::with_total_frames` sets the length and `PatternRenderer::info` returns the line. The Node.js and Python `PatternRenderer` take a `duration`.
+- `scripts/render_clips.py` renders 30-second clips at common frame sizes and rates, with a manifest and checksums, for hosting.
+
+### Changed
+
+- The frame is laid out for its shape. Landscape, square and slightly tall frames keep the QR code on the right, with the text and the dancer's stage on the left. Tall frames (narrower than 0.7 × their height, such as 9:16) put the text across the top, and the stage and QR code side by side below it. The timecode is smaller, at most 0.105 of the frame height. The barcode strip hasn't moved. `Layout` has new `info` and `stage` fields.
+- **The code tones are 8 dB quieter** (amplitude 0.08 each, peaking at 0.32 together, from 0.2 and 0.8) to make room for the music, which sounds about as loud as them. Together they measure about −15 LUFS, with 3 dB of headroom. In a sweep through AAC, MP3 and Opus, speaker distortion, room echo and noise, this cost nothing measurable, except about 2% of frames in a noisy room at 60 fps. The decoder's loudness floor follows the tones, from −54 to −62 dBFS. Older analyzers can still read new files, but very quiet recordings of them may fall below the old floor.
+- `GenerateOptions` has a new `music` field (on by default). `synthesizeAudio` and `synthesize_audio` in the bindings include the music unless told not to. `audio::synthesize` still makes the code alone.
+
 ## [0.2.1] - 2026-10-21
 
 ### Fixed

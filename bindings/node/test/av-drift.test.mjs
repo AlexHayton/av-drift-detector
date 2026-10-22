@@ -97,3 +97,14 @@ test('frames and audio in memory', async () => {
   assert.ok(report.summary.measured > 60, `${report.summary.measured} measured`)
   assert.ok(Math.abs(report.summary.meanMs - 12) < 0.01, `mean ${report.summary.meanMs} ms`)
 })
+
+test('music and length options', () => {
+  const withMusic = avd.synthesizeAudio({ fps: '25', count: 4800 })
+  const without = avd.synthesizeAudio({ fps: '25', count: 4800, music: false })
+  assert.notDeepEqual(withMusic, without)
+  // The info line shows the length only when it's given.
+  const plain = new avd.PatternRenderer({ fps: '25', width: 640, height: 360 }).render(0)
+  const timed = new avd.PatternRenderer({ fps: '25', width: 640, height: 360, duration: 6 }).render(0)
+  assert.ok(!plain.equals(timed))
+  assert.throws(() => new avd.PatternRenderer({ duration: 0 }), /duration must be positive/)
+})

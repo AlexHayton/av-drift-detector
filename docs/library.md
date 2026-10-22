@@ -116,10 +116,13 @@ use av_drift_detector::pattern::canvas::LumaImage;
 use av_drift_detector::pattern::PatternRenderer;
 
 let tones = ToneCode::new("30".parse().unwrap(), 48_000).unwrap();
-let renderer = PatternRenderer::new(1280, 720, tones).unwrap();
+let renderer = PatternRenderer::new(1280, 720, tones)
+    .unwrap()
+    .with_total_frames(300); // optional: the info line shows the length (10 s)
 let mut frame = LumaImage::new(1280, 720, 0);
 renderer.render(42, &mut frame.canvas()).unwrap();
-// frame.data is now frame 42: barcode, timecode, frame number, progress ticks, QR code.
+// frame.data is now frame 42: barcode, timecode, frame number, progress ticks,
+// info line, the dancer and the QR code.
 ```
 
 `LumaCanvas::new(data, width, height, stride)` wraps a plane you already own, with any stride.
@@ -130,7 +133,8 @@ renderer.render(42, &mut frame.canvas()).unwrap();
 use av_drift_detector::audio::{ToneCode, ToneSynth};
 
 let code = ToneCode::new("30".parse().unwrap(), 48_000).unwrap();
-let mut synth = ToneSynth::new(code, 0.0); // or a deliberate delay in seconds
+let mut synth = ToneSynth::new(code, 0.0) // or a deliberate delay in seconds
+    .with_music(); // optional: the tune `generate` adds, which decoding ignores
 let mut buffer = vec![0.0f32; 1024];
 synth.fill(&mut buffer); // call repeatedly; the stream is continuous
 ```

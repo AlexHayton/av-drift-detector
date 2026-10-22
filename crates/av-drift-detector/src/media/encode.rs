@@ -17,8 +17,12 @@ pub fn generate(opts: &GenerateOptions, mut on_progress: impl FnMut(Progress)) -
     let fps = opts.fps;
     let rate = opts.sample_rate;
     let tones = ToneCode::new(fps, rate)?;
-    let renderer = PatternRenderer::new(opts.width as usize, opts.height as usize, tones.clone())?;
+    let renderer = PatternRenderer::new(opts.width as usize, opts.height as usize, tones.clone())?
+        .with_total_frames(opts.total_frames());
     let mut synth = ToneSynth::new(tones, opts.audio_delay);
+    if opts.music {
+        synth = synth.with_music();
+    }
 
     let mut octx = format::output(&opts.output)?;
     let global_header = octx.format().flags().contains(format::Flags::GLOBAL_HEADER);

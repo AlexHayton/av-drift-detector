@@ -12,10 +12,10 @@
 It works on digital copies (re-encodes, screen and stream recordings, capture cards) **and on a phone filming a screen**, with the phone's own microphone listening to the speakers.
 
 <p align="center">
-  <img src="docs/media/pattern.gif" width="640" alt="The av-drift-detector test pattern: a barcode strip, timecode, frame number, progress ticks and a QR code, all changing every frame">
+  <img src="docs/media/pattern.gif" width="640" alt="The av-drift-detector test pattern: a barcode strip, timecode, frame number, progress ticks and a QR code, all changing every frame, and a stick figure in a top hat dancing with a cane">
 </p>
 
-<p align="center"><a href="docs/media/sample.mp4">▶ Sample test video with audio</a> (6 s, 30 fps, 700 KB)</p>
+<p align="center"><a href="docs/media/sample.mp4">▶ Sample test video with audio</a> (8 s, 30 fps, 1.1 MB)</p>
 
 ```console
 $ av-drift generate --fps 29.97 --duration 10 -o sync.mp4
@@ -49,6 +49,7 @@ So any frame, plus the audio around it, gives the exact drift. Measuring every f
 - **Self-describing files.** The barcode carries the frame rate, and the QR code carries the frame rate and audio tone plan, so analysis needs no settings. Scanned with any phone camera, the QR code opens this project's page.
 - **Camera mode.** Point a phone at a screen. The analyzer finds the QR code at any angle, and recovers the display's frame timing from many camera frames. It also tolerates room echo, noise, quiet recordings and inverted microphone polarity.
 - **Per-frame reports.** Mean, median, range, jitter and clock skew (ms/min and ppm), plus dropped and repeated frames. Output as text, JSON or CSV, with a `--max-drift` exit code for CI.
+- **Something to watch and listen to.** A stick figure in a top hat dances a physics-driven routine on the frame, and an oom-pah tune plays under the tones. The tune only uses frequencies the decoder ignores, so it doesn't affect the measurement, and the smooth motion makes judder and dropped frames easy to spot by eye. An info line shows the frame size, rate and length. Portrait, square and landscape frames each get their own layout.
 - **Library and CLI.** The pattern renderer, the audio coder/decoder and the analysis are plain Rust. Only file I/O uses [`ffmpeg-next`](https://crates.io/crates/ffmpeg-next), behind the default `ffmpeg` feature.
 
 ## Install
@@ -131,10 +132,10 @@ See [Using the library](docs/library.md) and the [API docs](https://docs.rs/av-d
 ## How it works
 
 <p align="center">
-  <img src="docs/media/anatomy.svg" width="800" alt="Anatomy of a test-pattern frame: barcode strip, timecode, frame number, frame-in-second ticks, QR code">
+  <img src="docs/media/anatomy.svg" width="800" alt="Anatomy of a test-pattern frame: barcode strip, timecode, frame number, frame-in-second ticks, info line, the dancer's stage, QR code">
 </p>
 
-Each frame's audio plays four tones, one from each of four bands of 16 frequencies. Each tone carries one hex digit of the frame number. Every frequency is a whole multiple of the frame rate, so each tone completes a whole number of cycles per frame: the waveform has no clicks, and a window aligned to a frame sees each tone exactly on a DFT bin.
+Each frame's audio plays four tones, one from each of four bands of 16 frequencies. Each tone carries one hex digit of the frame number. Every frequency is a whole multiple of the frame rate, so each tone completes a whole number of cycles per frame: the waveform has no clicks, and a window aligned to a frame sees each tone exactly on a DFT bin. The tune underneath is made the same way, from lower harmonics that change only between frames, so that window doesn't see it at all.
 
 <p align="center">
   <img src="docs/media/spectrogram.png" width="800" alt="Spectrogram of one second of test audio: the lowest band steps up every frame, the next every 16 frames, the top two hold steady">

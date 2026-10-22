@@ -11,7 +11,13 @@ class PatternRenderer:
     """Renders test-pattern frames as 8-bit luma planes, without FFmpeg."""
 
     def __init__(
-        self, *, fps: str = "30", width: int = 1280, height: int = 720, sample_rate: int = 48000
+        self,
+        *,
+        fps: str = "30",
+        width: int = 1280,
+        height: int = 720,
+        sample_rate: int = 48000,
+        duration: float | None = None,
     ) -> None: ...
     @property
     def width(self) -> int: ...
@@ -40,6 +46,7 @@ def generate(
     video_codec: str = "h264",
     audio_codec: str = "aac",
     audio_offset: float = 0.0,
+    music: bool = True,
     on_progress: Callable[[int, int], object] | None = None,
 ) -> dict[str, Any]: ...
 def read_frame(
@@ -57,5 +64,11 @@ def analyze_frames(
     capture: str = "auto",
 ) -> str: ...
 def synthesize_audio(
-    count: int, *, fps: str = "30", sample_rate: int = 48000, delay: float = 0.0, start: int = 0
+    count: int,
+    *,
+    fps: str = "30",
+    sample_rate: int = 48000,
+    delay: float = 0.0,
+    start: int = 0,
+    music: bool = True,
 ) -> bytes: ...

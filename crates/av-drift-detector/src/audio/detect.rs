@@ -30,7 +30,7 @@ use std::sync::Arc;
 use rustfft::num_complex::Complex;
 use rustfft::{Fft, FftPlanner};
 
-use super::code::{BANDS, TONE_COUNT, TONES_PER_BAND, ToneCode};
+use super::code::{BANDS, TONE_AMPLITUDE, TONE_COUNT, TONES_PER_BAND, ToneCode};
 
 /// Frames aligned together; the boundary phase is assumed constant within a block.
 const BLOCK_CELLS: usize = 8;
@@ -65,8 +65,9 @@ pub struct CellDetector {
     /// Per-tone reference tables, indexed `band * 16 + nibble`.
     cos: Vec<Vec<f32>>,
     sin: Vec<Vec<f32>>,
-    /// Cells quieter than this (in any band) are ignored. The default (-54 dBFS)
-    /// suits quiet microphone recordings; random noise is rejected by purity instead.
+    /// Cells quieter than this (in any band) are ignored. The default, 40 dB
+    /// below a generated tone (-62 dBFS), suits quiet microphone recordings;
+    /// random noise is rejected by purity instead.
     pub min_amplitude: f32,
     /// Cells whose weakest band purity is below this are ignored. Noise alone
     /// scores about 0.2; room echo lowers real cells to around 0.7–0.9.
@@ -108,7 +109,7 @@ impl CellDetector {
             window,
             cos,
             sin,
-            min_amplitude: 0.002,
+            min_amplitude: (TONE_AMPLITUDE / 100.0) as f32,
             min_confidence: 0.5,
             block_span,
             search,

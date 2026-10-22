@@ -126,10 +126,13 @@ pub struct GenerateOptions {
     /// A deliberate audio delay in seconds (positive = audio late, negative = early),
     /// to check an analyser or a pipeline against a known offset.
     pub audio_delay: f64,
+    /// Mix the [`Music`](crate::audio::Music) in under the code (up to about
+    /// 60 fps). It doesn't affect analysis.
+    pub music: bool,
 }
 
 impl GenerateOptions {
-    /// 1280×720, 48 kHz, H.264 + AAC, no injected delay.
+    /// 1280×720, 48 kHz, H.264 + AAC, no injected delay, with music.
     pub fn new(output: impl Into<PathBuf>, fps: FrameRate, duration: f64) -> Self {
         GenerateOptions {
             output: output.into(),
@@ -141,6 +144,7 @@ impl GenerateOptions {
             video_codec: VideoCodec::default(),
             audio_codec: AudioCodec::default(),
             audio_delay: 0.0,
+            music: true,
         }
     }
 

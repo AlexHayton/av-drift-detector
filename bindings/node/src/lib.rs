@@ -269,6 +269,9 @@ pub struct GenerateOptions {
     pub audio_codec: Option<String>,
     /// A deliberate audio delay in seconds: positive makes the audio late.
     pub audio_offset: Option<f64>,
+    /// Mix music in under the code tones (default true; up to about 60 fps).
+    /// It doesn't affect analysis.
+    pub music: Option<bool>,
 }
 
 /// What `generate` wrote.
@@ -378,6 +381,7 @@ impl GenerateOptions {
             core.audio_codec = codec.parse().map_err(reason)?;
         }
         core.audio_delay = options.audio_offset.unwrap_or(0.0);
+        core.music = options.music.unwrap_or(true);
         Ok(core)
     }
 }
@@ -551,6 +555,8 @@ pub struct PatternOptions {
     pub height: Option<u32>,
     /// Audio sample rate in Hz (default 48000); the QR code describes the matching tone plan.
     pub sample_rate: Option<u32>,
+    /// The file's length in seconds, for the info line (rounded to whole frames).
+    pub duration: Option<f64>,
 }
 
 /// Renders test-pattern frames into 8-bit luma planes (the Y plane of a
@@ -568,11 +574,17 @@ impl PatternRenderer {
     pub fn new(options: Option<PatternOptions>) -> Result<Self> {
         let o = options.unwrap_or_default();
         let (width, height) = (o.width.unwrap_or(1280), o.height.unwrap_or(720));
+        let rate = fps(o.fps.as_deref())?;
         let tones =
-            avd::audio::ToneCode::new(fps(o.fps.as_deref())?, o.sample_rate.unwrap_or(48_000))
-                .map_err(reason)?;
-        let inner = avd::pattern::PatternRenderer::new(width as usize, height as usize, tones)
+            avd::audio::ToneCode::new(rate, o.sample_rate.unwrap_or(48_000)).map_err(reason)?;
+        let mut inner = avd::pattern::PatternRenderer::new(width as usize, height as usize, tones)
             .map_err(reason)?;
+        if let Some(seconds) = o.duration {
+            if !(seconds.is_finite() && seconds > 0.0) {
+                return Err(reason(format!("duration must be positive, got {seconds}")));
+            }
+            inner = inner.with_total_frames(rate.frames_in(seconds));
+        }
         Ok(PatternRenderer {
             inner,
             width,
@@ -614,9 +626,11 @@ pub struct AudioOptions {
     pub start: Option<i64>,
     /// How many samples to make.
     pub count: u32,
+    /// Mix in the music `generate` adds (default true). It doesn't affect analysis.
+    pub music: Option<bool>,
 }
 
-/// The test pattern's audio (mono, the tones for each frame's number).
+/// The test pattern's audio (mono): the tones for each frame's number, and music.
 #[napi]
 pub fn synthesize_audio(options: AudioOptions) -> Result<Float32Array> {
     let code = avd::audio::ToneCode::new(
@@ -625,11 +639,12 @@ pub fn synthesize_audio(options: AudioOptions) -> Result<Float32Array> {
     )
     .map_err(reason)?;
     let start = u64::try_from(options.start.unwrap_or(0)).map_err(reason)?;
-    let samples = avd::audio::synthesize(
-        &code,
-        options.delay.unwrap_or(0.0),
-        start,
-        options.count as usize,
-    );
+    let mut synth =
+        avd::audio::ToneSynth::new(code, options.delay.unwrap_or(0.0)).starting_at(start);
+    if options.music.unwrap_or(true) {
+        synth = synth.with_music();
+    }
+    let mut samples = vec![0.0; options.count as usize];
+    synth.fill(&mut samples);
     Ok(Float32Array::new(samples))
 }

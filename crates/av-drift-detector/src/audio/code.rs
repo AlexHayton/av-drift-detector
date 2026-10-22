@@ -21,8 +21,11 @@ pub const BAND_GAP: usize = 2;
 pub const TONE_COUNT: usize = BANDS * TONES_PER_BAND;
 /// Lowest tone frequency (rounded up to a harmonic of the frame rate).
 pub const MIN_FREQUENCY_HZ: f64 = 600.0;
-/// Peak amplitude of each tone; four tones peak at 0.8 full scale.
-pub const TONE_AMPLITUDE: f64 = 0.2;
+/// Peak amplitude of each tone; the four tones peak at 0.32 of full scale
+/// together, leaving room for the [`Music`](super::Music) to be heard. (Up
+/// to 0.2.1 it was 0.2.) Decoding doesn't depend on the level, short of a
+/// recording too quiet to hear.
+pub const TONE_AMPLITUDE: f64 = 0.08;
 /// Audio frame ids wrap at this value.
 pub const ID_MODULUS: u32 = 1 << 16;
 

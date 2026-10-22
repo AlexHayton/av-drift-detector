@@ -116,6 +116,13 @@ impl<'a> LumaCanvas<'a> {
         }
     }
 
+    /// Mixes `value` into the pixel at `(x, y)` with weight `alpha` (0 to 1).
+    pub(crate) fn blend(&mut self, x: usize, y: usize, value: f64, alpha: f64) {
+        let p = &mut self.data[y * self.stride + x];
+        let old = f64::from(*p);
+        *p = (old + (value - old) * alpha).round().clamp(0.0, 255.0) as u8;
+    }
+
     /// Draws a `thickness`-pixel outline just inside `rect`.
     pub fn stroke_rect(&mut self, rect: Rect, thickness: i32, value: u8) {
         let t = thickness;

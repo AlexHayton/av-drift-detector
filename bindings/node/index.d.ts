@@ -60,6 +60,8 @@ export interface AudioOptions {
   start?: number
   /** How many samples to make. */
   count: number
+  /** Mix in the music `generate` adds (default true). It doesn't affect analysis. */
+  music?: boolean
 }
 
 /** A capture decoded by your own code, for `analyzeFrames`. */
@@ -183,6 +185,11 @@ export interface GenerateOptions {
   audioCodec?: 'aac' | 'pcm'
   /** A deliberate audio delay in seconds: positive makes the audio late. */
   audioOffset?: number
+  /**
+   * Mix music in under the code tones (default true; up to about 60 fps).
+   * It doesn't affect analysis.
+   */
+  music?: boolean
 }
 
 /** Progress through `generate`, reported about once per percent. */
@@ -212,6 +219,8 @@ export interface PatternOptions {
   height?: number
   /** Audio sample rate in Hz (default 48000); the QR code describes the matching tone plan. */
   sampleRate?: number
+  /** The file's length in seconds, for the info line (rounded to whole frames). */
+  duration?: number
 }
 
 /**
@@ -220,5 +229,5 @@ export interface PatternOptions {
  */
 export declare function readFrame(luma: Uint8Array, width: number, height: number, stride?: number | undefined | null, tryQr?: boolean | undefined | null): FrameStamp | null
 
-/** The test pattern's audio (mono, the tones for each frame's number). */
+/** The test pattern's audio (mono): the tones for each frame's number, and music. */
 export declare function synthesizeAudio(options: AudioOptions): Float32Array

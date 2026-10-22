@@ -73,7 +73,8 @@ pub fn generate(opts: &GenerateOptions, mut on_progress: impl FnMut(Progress)) -
     let (fps, rate) = (opts.fps, opts.sample_rate);
     let (w, h) = (opts.width as usize, opts.height as usize);
     let tones = ToneCode::new(fps, rate)?;
-    let renderer = PatternRenderer::new(w, h, tones.clone())?;
+    let renderer =
+        PatternRenderer::new(w, h, tones.clone())?.with_total_frames(opts.total_frames());
     let total_frames = opts.total_frames();
     let total_samples = fps.frame_start_sample(total_frames as i64, rate) as u64;
 
@@ -82,6 +83,9 @@ pub fn generate(opts: &GenerateOptions, mut on_progress: impl FnMut(Progress)) -
     {
         let mut out = BufWriter::new(File::create(&audio.0)?);
         let mut synth = ToneSynth::new(tones, opts.audio_delay);
+        if opts.music {
+            synth = synth.with_music();
+        }
         let mut chunk = vec![0.0f32; 4800];
         let mut left = total_samples;
         while left > 0 {
