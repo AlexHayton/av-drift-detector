@@ -15,7 +15,7 @@ test = false
 doctest = false
 
 [dependencies]
-av-drift-detector = { path = "../../crates/av-drift-detector", version = "0.2.1", default-features = false, features = ["ffmpeg-cli", "qr-decode"] }
+av-drift-detector = { path = "../../crates/av-drift-detector", version = "0.3.0", default-features = false, features = ["ffmpeg-cli", "qr-decode"] }
 # The stable ABI from Python 3.11: one wheel for every later version.
 pyo3 = { version = "0.30", features = ["abi3-py311"] }
 serde_json = "1.0"

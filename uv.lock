@@ -15,7 +15,7 @@ dev = [
 
 [[package]]
 name = "av-drift-detector"
-version = "0.2.1"
+version = "0.3.0"
 source = { editable = "bindings/python" }
 
 [package.dev-dependencies]

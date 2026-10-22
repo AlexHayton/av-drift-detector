@@ -4,6 +4,8 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-10-22
+
 ### Added
 
 - **A dancer.** A stick figure in shades and a top hat dances on every frame with a cane and a striped scarf, on a light-up floor beside a boombox: an 8-second, 16-beat routine at 120 bpm, in time with the frame-in-second ticks. It's physics-driven: a Verlet-simulated scarf, a hat thrown so that gravity lands it back on his head, spring-loaded robot arms, a ballistic star jump with a sprung landing, and notes and dust under drag. Like the rest of the frame, it's drawn from the frame number alone. Smooth motion also makes judder and dropped frames easy to see.
@@ -50,7 +52,8 @@ First release.
 - Text, JSON and CSV reports, analysis windows (`--offset`, `--duration`), and `--max-drift` for use in CI.
 - The `av_drift_detector` library, with FFmpeg-free pattern rendering, audio synthesis and audio detection.
 
-[Unreleased]: https://github.com/AlexHayton/av-drift-detector/compare/v0.2.1...HEAD
+[Unreleased]: https://github.com/AlexHayton/av-drift-detector/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/AlexHayton/av-drift-detector/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/AlexHayton/av-drift-detector/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/AlexHayton/av-drift-detector/releases/tag/v0.2.0
 [0.1.0]: https://github.com/AlexHayton/av-drift-detector/releases/tag/v0.1.0
