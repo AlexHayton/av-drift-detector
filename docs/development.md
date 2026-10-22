@@ -166,7 +166,7 @@ for pkg in av-drift-detector av-drift-detector-{darwin-arm64,darwin-x64,linux-ar
 done
 ```
 
-npm only lets you add a trusted publisher to a package that already exists, which is why 0.2.1, the first version on npm, was published with a token. It also drops a new trusted publisher that hasn't published anything within 2 days, so add them shortly before a release. Once a release has published through them, set each package's **Publishing access** to "Require two-factor authentication and disallow tokens".
+npm only lets you add a trusted publisher to a package that already exists, which is why 0.2.1, the first version on npm, was published by hand. It also drops a new trusted publisher that hasn't published anything within 2 days, so add them shortly before a release. Once a release has published through them, set each package's **Publishing access** to "Require two-factor authentication and disallow tokens".
 
 **PyPI.** Add a [pending trusted publisher](https://docs.pypi.org/trusted-publishers/creating-a-project-through-oidc/) for the project `av-drift-detector`: owner `AlexHayton`, repository `av-drift-detector`, workflow `release.yml`, environment `pypi`. No token is needed; the first release creates the project.
 
