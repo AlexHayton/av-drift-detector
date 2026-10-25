@@ -1,6 +1,6 @@
 [package]
 name = "av-drift-detector"
-version = "0.4.0"
+version = "0.5.0"
 edition.workspace = true
 rust-version.workspace = true
 description = "Generate machine-readable A/V sync test videos and measure audio/video drift frame by frame"

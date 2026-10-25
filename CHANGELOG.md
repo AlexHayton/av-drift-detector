@@ -4,6 +4,8 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-10-25
+
 ### Added
 
 - **Cameras that report their exposure.** `VideoSample` has `exposure` and `readout` (seconds): each frame's exposure time and rolling-shutter readout, as phones' camera APIs report them (Android's `SENSOR_EXPOSURE_TIME` and `SENSOR_ROLLING_SHUTTER_SKEW`). With them, each frame caught mid-switch gives the display's switch time directly, from its own exposure and at the QR code's own row, and frame-number bounds are taken at the middle of each exposure. In simulation, a camera locked to the pattern's rate (30 fps filming 30 fps, phones' default) is timed to within 0.1 ms, reported as ±0.5 to ±1.5 ms, instead of within ±12 ms, and auto-exposure changing during a capture is followed frame by frame. Camera timestamps stay the start of the top row's exposure: don't move them to the middle. The Node.js and Python `StampReader.read` take `exposure` and `readout`, and captured frames carry them. Reports gain `exposure_source` (`reported` or `measured`).
@@ -83,7 +85,8 @@ First release.
 - Text, JSON and CSV reports, analysis windows (`--offset`, `--duration`), and `--max-drift` for use in CI.
 - The `av_drift_detector` library, with FFmpeg-free pattern rendering, audio synthesis and audio detection.
 
-[Unreleased]: https://github.com/AlexHayton/av-drift-detector/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/AlexHayton/av-drift-detector/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/AlexHayton/av-drift-detector/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/AlexHayton/av-drift-detector/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/AlexHayton/av-drift-detector/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/AlexHayton/av-drift-detector/compare/v0.2.0...v0.2.1
