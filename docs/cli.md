@@ -101,6 +101,7 @@ For example, `av-drift analyze sync.mp4 --json --offset 2 --duration 0.02` (a on
   "video_timing_uncertainty_ms": null,
   "video_timing": null,
   "exposure_ms": null,
+  "exposure_source": null,
   "max_exposure_ms": null,
   "display_judder": 0,
   "alternative": null,
@@ -155,7 +156,8 @@ For example, `av-drift analyze sync.mp4 --json --offset 2 --duration 0.02` (a on
 | `capture` | `file` or `camera` (the mode actually used). |
 | `video_timing_uncertainty_ms` | Camera captures: ± how precisely the display's frame timing was recovered. `null` for files. |
 | `video_timing` | Camera captures: `blend` (timed from frames that caught the display mid-switch) or `bounds` (from frame numbers alone). |
-| `exposure_ms` | Camera captures timed from blends: the camera's exposure time, where the capture let it be measured. |
+| `exposure_ms` | Camera captures: the camera's exposure time, where the camera reported it with each frame (the median; the [library](library.md#bring-your-own-decoder) and bindings take it, video files don't record it) or the blends let it be measured. |
+| `exposure_source` | Where `exposure_ms` came from: `reported` or `measured`. |
 | `max_exposure_ms` | Camera captures timed from blends, where the exposure couldn't be measured: the longest allowed for (the camera's frame interval). |
 | `display_judder` | Frames the display showed noticeably early or late. |
 | `alternative` | When the capture could be either a digital copy or a camera locked to the pattern's rate: `{capture, mean_ms, video_timing_uncertainty_ms}` for the other reading. Otherwise `null`. |

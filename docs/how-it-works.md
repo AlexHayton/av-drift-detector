@@ -57,7 +57,7 @@ The audio ids are unwrapped against the video frame number shown at about the sa
 a = t − (M + 1)/fps + E·(1 − β)
 ```
 
-with `β` referred back to the top row through the rolling shutter's slope (the median over all frames). The exposure `E` isn't recorded in video files. When the camera's and display's phases drift apart during the capture, `β` changes with them, and a robust (Theil–Sen) line through `t − (M+1)/fps` against `1 − β` measures `E` from its slope. Otherwise `E` is only known to lie between zero and the camera's frame interval, and the analyzer takes the middle and reports the rest as uncertainty. Each blended frame gives its own switch time, so the display's own irregularities show up per frame, and frames whose switch time stands out from their neighbours' are counted as *display judder*.
+with `β` referred back to the top row through the rolling shutter's slope (the median over all frames), or, if the camera reported its readout `R`, taken at the code's middle row `y` of `H`, which began its exposure `R·y/H` after `t`. If the camera reported each frame's exposure (a phone app reading its own camera), each frame's switch time follows directly, with its own `E`. The exposure `E` isn't recorded in video files. When the camera's and display's phases drift apart during the capture, `β` changes with them, and a robust (Theil–Sen) line through `t − (M+1)/fps` against `1 − β` measures `E` from its slope. Otherwise `E` is only known to lie between zero and the camera's frame interval, and the analyzer takes the middle and reports the rest as uncertainty. Each blended frame gives its own switch time, so the display's own irregularities show up per frame, and frames whose switch time stands out from their neighbours' are counted as *display judder*.
 
 *From bounds*, otherwise. Each observation of frame `N` bounds the offset: the frame on screen for most of the exposure is the one showing at its middle, `t + E/2`, so
 
@@ -65,7 +65,7 @@ with `β` referred back to the top row through the rolling shutter's slope (the 
 t + E/2 − (N + 1)/fps  ≤  a  ≤  t + E/2 − N/fps
 ```
 
-where `E` is estimated from how often frames came out blended. Intersecting these bounds over every frame read (ignoring the most extreme 2% on each side) leaves a range of possible offsets. Its midpoint is the estimate, and its half-width is the reported *display timing* uncertainty. When the camera and pattern rates don't divide evenly, observations land at many phases and the range shrinks to a fraction of a millisecond; when they're locked, it stays a whole frame wide. If the bounds conflict (a juddering or stalling display), the analyzer falls back to the median and reports half a frame of uncertainty.
+where `E` is each frame's reported exposure, or else is estimated from how often frames came out blended (and `t` moves to the code's row by a reported readout). Intersecting these bounds over every frame read (ignoring the most extreme 2% on each side) leaves a range of possible offsets. Its midpoint is the estimate, and its half-width is the reported *display timing* uncertainty. When the camera and pattern rates don't divide evenly, observations land at many phases and the range shrinks to a fraction of a millisecond; when they're locked, it stays a whole frame wide. If the bounds conflict (a juddering or stalling display), the analyzer falls back to the median and reports half a frame of uncertainty.
 
 Then `video_position(t) = (t − a) · fps`.
 
@@ -87,11 +87,12 @@ From the test suite and `scripts/stress.py`:
 | Audio 60 dB quieter; through a small speaker's response; a notch at one tone; strong echo (60%, 45% and 30% at 23, 61 and 127 ms); AGC; AAC at 32 kb/s, Opus at 16 kb/s, MP3 at 48 kb/s | within 0.3 ms (the filters' own delay) |
 | Simulated camera at 24 fps filming 25 fps, 1/50 s exposures, 12 ms rolling shutter, keystoned, soft and noisy | within 1 ms; exposure measured to ±1.5 ms |
 | Simulated camera locked to the pattern's rate (30 on 30), blended | within its reported uncertainty, under ±12 ms (from ±16.7 ms by frame numbers alone) |
+| The same, reporting its exposure and readout as phones do | within 0.1 ms, reported as ±0.5 to ±1.5 ms |
 | `.mkv` (millisecond timestamps) | within 0.6 ms (rounding) |
 
 ## Limitations
 
-- **Cameras locked to the pattern's rate** (30 fps filming 30 fps) are timed from the blends they catch, but their exposure time can't be measured unless the phases drift during the capture, which leaves up to about a third of a frame of uncertainty. Filming at another rate, or recording for longer, removes it (see the [camera guide](camera.md)).
+- **Cameras locked to the pattern's rate** (30 fps filming 30 fps) are timed from the blends they catch, but their exposure time can't be measured unless the phases drift during the capture, which leaves up to about a third of a frame of uncertainty. Filming at another rate, recording for longer, or passing the exposure the camera reports (an app reading its own camera) removes it (see the [camera guide](camera.md)).
 - **Camera timestamps** are taken to mark the start of each exposure, as phones record them. A recorder that marks the middle shifts camera readings by half the exposure.
 - **Frame-rate conversion** (e.g. 30 → 25 fps) changes which source frame is shown when. Each reading is still correct for the frame shown, but the drift includes the conversion's own timing changes.
 - **Very low-bandwidth audio codecs**: at 120 fps the top tones reach 8.9 kHz, which narrowband speech codecs remove. A band lost entirely is filled in from the video, but a lower pattern rate is better for those paths.

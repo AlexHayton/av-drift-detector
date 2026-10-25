@@ -173,3 +173,26 @@ test('StampReader times a camera from blended frames', async () => {
   assert.ok(Math.abs(report.summary.meanMs - 12) < 1, `mean ${report.summary.meanMs} ms`)
   assert.ok(report.frames.some((f) => f.videoBlend !== undefined && f.videoBlend !== null))
 })
+
+test('a camera that reports its exposure is timed from it', async () => {
+  // 25 fps filming 25 fps: every picture is caught at the same phase, so the
+  // blends can't measure the exposure, but the camera reports it.
+  const renderer = new avd.PatternRenderer({ fps: '25', width: 640, height: 360 })
+  const reader = new avd.StampReader()
+  for (const { t, luma } of filmed(renderer, 25, 25, 0.035, 3)) {
+    assert.equal(reader.read(luma, 640, 360, t, undefined, 0.035, 0).exposure, 0.035)
+  }
+  const samples = avd.synthesizeAudio({ fps: '25', delay: 0.012, count: 48000 * 3.5 })
+  const report = await avd.analyzeFrames({
+    frames: reader.finish(),
+    audio: { sampleRate: 48000, startTime: 0, samples },
+    width: 640,
+    height: 360,
+  })
+  assert.equal(report.videoTiming, 'blend')
+  assert.equal(report.exposureSource, 'reported')
+  assert.ok(Math.abs(report.exposureMs - 35) < 1e-9, `exposure ${report.exposureMs} ms`)
+  // Unreported, a locked camera's exposure could be anything up to a frame (±18 ms here).
+  assert.ok(report.videoTimingUncertaintyMs < 5, `± ${report.videoTimingUncertaintyMs} ms`)
+  assert.ok(Math.abs(report.summary.meanMs - 12) < 1, `mean ${report.summary.meanMs} ms`)
+})

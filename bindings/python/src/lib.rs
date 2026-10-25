@@ -162,12 +162,15 @@ fn stamp_dict<'py>(py: Python<'py>, s: FrameStamp) -> PyResult<Bound<'py, PyDict
     Ok(d)
 }
 
-/// A frame as `analyze_frames` takes it: `{"time", "stamp", "qr_located"}`.
+/// A frame as `analyze_frames` takes it: `{"time", "stamp", "qr_located",
+/// "exposure", "readout"}`.
 fn frame_dict<'py>(py: Python<'py>, v: &VideoSample) -> PyResult<Bound<'py, PyDict>> {
     let d = PyDict::new(py);
     d.set_item("time", v.time)?;
     d.set_item("stamp", v.stamp.map(|s| stamp_dict(py, s)).transpose()?)?;
     d.set_item("qr_located", v.qr_located)?;
+    d.set_item("exposure", v.exposure)?;
+    d.set_item("readout", v.readout)?;
     Ok(d)
 }
 
@@ -282,6 +285,12 @@ fn analyze_frames(
                 .transpose()?,
             qr_located: optional(&frame, "qr_located")?.map_or(Ok(false), |v| v.extract())?,
             old_format: false,
+            exposure: optional(&frame, "exposure")?
+                .map(|v| v.extract())
+                .transpose()?,
+            readout: optional(&frame, "readout")?
+                .map(|v| v.extract())
+                .transpose()?,
         });
     }
     let audio = audio
@@ -324,8 +333,10 @@ impl StampReader {
         }
     }
 
-    /// Reads the next frame, an 8-bit luma plane shown at `time` seconds.
-    #[pyo3(signature = (luma, width, height, time, stride=None))]
+    /// Reads the next frame, an 8-bit luma plane shown at `time` seconds, with
+    /// the camera's `exposure` and rolling-shutter `readout` if it reports them.
+    #[pyo3(signature = (luma, width, height, time, stride=None, *, exposure=None, readout=None))]
+    #[allow(clippy::too_many_arguments)]
     fn read<'py>(
         &mut self,
         py: Python<'py>,
@@ -334,11 +345,17 @@ impl StampReader {
         height: usize,
         time: f64,
         stride: Option<usize>,
+        exposure: Option<f64>,
+        readout: Option<f64>,
     ) -> PyResult<Bound<'py, PyDict>> {
         let data = plane(py, luma, width, height, stride)?;
         let stride = stride.unwrap_or(width);
         let inner = &mut self.inner;
-        let sample = py.detach(|| inner.read(&LumaView::new(&data, width, height, stride), time));
+        let sample = VideoSample {
+            exposure,
+            readout,
+            ..py.detach(|| inner.read(&LumaView::new(&data, width, height, stride), time))
+        };
         self.frames.push(sample);
         frame_dict(py, &sample)
     }

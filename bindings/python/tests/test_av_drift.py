@@ -179,6 +179,25 @@ def test_stamp_reader_times_a_camera_from_blended_frames() -> None:
     assert any(f["video_blend"] is not None for f in report["frames"])
 
 
+def test_a_camera_that_reports_its_exposure_is_timed_from_it() -> None:
+    # 25 fps filming 25 fps: every picture is caught at the same phase, so the
+    # blends can't measure the exposure, but the camera reports it.
+    renderer = avd.PatternRenderer(fps="25", width=640, height=360)
+    reader = avd.StampReader()
+    for t, luma in filmed(renderer, 25.0, 25.0, 0.035, 3.0):
+        frame = reader.read(luma, 640, 360, t, exposure=0.035, readout=0.0)
+        assert frame["exposure"] == 0.035
+    samples = avd.synthesize_audio(int(48_000 * 3.5), fps="25", delay=0.012)
+    audio: avd.CapturedAudio = {"sample_rate": 48_000, "start_time": 0.0, "samples": samples}
+    report = avd.analyze_frames(reader.finish(), audio, width=640, height=360)
+    assert report["video_timing"] == "blend"
+    assert report["exposure_source"] == "reported"
+    assert report["exposure_ms"] == pytest.approx(35)
+    # Unreported, a locked camera's exposure could be anything up to a frame (±18 ms here).
+    assert report["video_timing_uncertainty_ms"] < 5
+    assert report["summary"]["mean_ms"] == pytest.approx(12, abs=1)
+
+
 def test_music_and_length_options() -> None:
     with_music = avd.synthesize_audio(4800, fps="25")
     assert with_music != avd.synthesize_audio(4800, fps="25", music=False)

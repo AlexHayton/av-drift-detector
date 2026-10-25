@@ -19,12 +19,15 @@
 //! display's phases drift relative to each other during the capture, `β`
 //! changes with them, and the fit of switch times against `β` measures `E`.
 //! Otherwise it's only known to lie between zero and the camera's frame
-//! interval, and the reported uncertainty says so.
+//! interval, and the reported uncertainty says so. A camera that reports each
+//! frame's exposure ([`VideoSample::exposure`](crate::media::VideoSample::exposure),
+//! from a phone's capture metadata) removes the guesswork, frame by frame.
 //!
 //! Camera timestamps are taken to mark the start of the exposure of the
 //! picture's top row, as phones record them. A rolling shutter exposes lower
-//! rows later; the change in `β` down the QR code measures that, and the
-//! timing is referred back to the top row.
+//! rows later: by the readout the camera reports
+//! ([`VideoSample::readout`](crate::media::VideoSample::readout)), if it does,
+//! and otherwise by what the change in `β` down the QR code measures.
 
 use crate::FrameRate;
 use crate::media::MediaScan;
@@ -47,10 +50,8 @@ pub struct DisplayTiming {
     pub uncertainty: f64,
     /// How the timeline was found.
     pub method: TimingMethod,
-    /// The camera's exposure time, if it could be measured (seconds).
-    pub exposure: Option<f64>,
-    /// The longest exposure assumed when it couldn't be measured (seconds).
-    pub max_exposure: Option<f64>,
+    /// What the timing knew of the camera's exposure time, where it used it.
+    pub exposure: Option<Exposure>,
     /// Per-frame offsets for frames whose own switch time was measured, by
     /// index into the scan's video samples: these show the display's own
     /// irregularities (judder).
@@ -78,6 +79,37 @@ impl TimingMethod {
     }
 }
 
+/// The camera's exposure time, as far as the timing knew it (seconds).
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Exposure {
+    /// Reported by the camera with each frame: the median. Each frame was
+    /// timed with its own.
+    Reported(f64),
+    /// Measured from how the blends changed with the camera's phase.
+    Measured(f64),
+    /// Unknown, so anything up to this was allowed for (the camera's frame interval).
+    Unknown { max: f64 },
+}
+
+impl Exposure {
+    /// The exposure, if it was reported or measured.
+    pub fn known(self) -> Option<f64> {
+        match self {
+            Exposure::Reported(e) | Exposure::Measured(e) => Some(e),
+            Exposure::Unknown { .. } => None,
+        }
+    }
+
+    /// Where a known exposure came from: `reported` or `measured`.
+    pub fn source(self) -> Option<&'static str> {
+        match self {
+            Exposure::Reported(_) => Some("reported"),
+            Exposure::Measured(_) => Some("measured"),
+            Exposure::Unknown { .. } => None,
+        }
+    }
+}
+
 /// One frame's stamp, as the timing needs it.
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct Observation {
@@ -92,10 +124,16 @@ pub(crate) struct Observation {
     pub code_rows: Option<(f64, f64)>,
     /// The QR code's corners, if it was read from one.
     pub corners: Option<[(f32, f32); 4]>,
+    /// The exposure time the camera reported (seconds).
+    pub exposure: Option<f64>,
+    /// How long after the picture's top row the QR code's middle row began
+    /// its exposure (seconds), from the readout the camera reported.
+    pub code_delay: Option<f64>,
 }
 
 impl Observation {
     pub fn from_scan(scan: &MediaScan) -> Vec<Observation> {
+        let height = f64::from(scan.height);
         scan.video
             .iter()
             .enumerate()
@@ -107,6 +145,11 @@ impl Observation {
                     let bottom = ys.iter().copied().fold(f64::NEG_INFINITY, f64::max);
                     ((top + bottom) / 2.0, (bottom - top).max(1.0))
                 });
+                let code_delay = v
+                    .readout
+                    .filter(|r| r.is_finite() && *r >= 0.0 && height > 0.0)
+                    .zip(code_rows)
+                    .map(|(readout, (centre, _))| readout * (centre / height).clamp(0.0, 1.0));
                 Some(Observation {
                     index,
                     time: v.time,
@@ -115,10 +158,21 @@ impl Observation {
                     blend: s.blend,
                     code_rows,
                     corners: s.corners,
+                    exposure: v.exposure.filter(|e| e.is_finite() && *e > 0.0),
+                    code_delay,
                 })
             })
             .collect()
     }
+}
+
+/// The median exposure the camera reported, if it reported any.
+fn reported_exposure<'a>(observations: impl IntoIterator<Item = &'a Observation>) -> Option<f64> {
+    let reported: Vec<f64> = observations
+        .into_iter()
+        .filter_map(|o| o.exposure)
+        .collect();
+    (!reported.is_empty()).then(|| median(reported))
 }
 
 /// The display timeline for camera observations. `camera_interval` is the
@@ -129,8 +183,12 @@ pub(crate) fn display_timing(
     camera_interval: Option<f64>,
 ) -> Option<DisplayTiming> {
     blend_timing(observations, fps, camera_interval).or_else(|| {
-        let exposure = typical_exposure(observations, fps, camera_interval);
-        bound_timing(observations, fps, exposure)
+        let reported = reported_exposure(observations);
+        let exposure =
+            reported.unwrap_or_else(|| typical_exposure(observations, fps, camera_interval));
+        let mut timing = bound_timing(observations, fps, exposure, reported.is_some())?;
+        timing.exposure = reported.map(Exposure::Reported);
+        Some(timing)
     })
 }
 
@@ -171,30 +229,50 @@ fn blend_timing(
     // A rolling shutter is the same in every frame: the median slope of β
     // down the code, referred to the top of the picture.
     let slope = median(mixed.iter().map(|(_, b)| f64::from(b.slope)).collect());
-    // r = t − (M+1)/fps; the switch to M+1 came at t + E·u, so offset = r + E·u.
-    let points: Vec<(usize, f64, f64)> = mixed
+    // The display switched to M+1 at t + delay + E·u, where the code's middle
+    // row began its exposure `delay` after t, and u = 1 − β there. With
+    // r = t + delay − (M+1)/fps, the offset is r + E·u.
+    let points: Vec<BlendPoint> = mixed
         .iter()
         .map(|(o, b)| {
-            let top_weight = match o.code_rows {
-                Some((centre, height)) => f64::from(b.weight_next) - slope * centre / height,
-                None => f64::from(b.weight_next),
-            };
             let r = o.time - (f64::from(b.first) + 1.0) * d;
-            (o.index, r, 1.0 - top_weight)
+            let weight = f64::from(b.weight_next);
+            let (r, u) = match (o.code_delay, o.code_rows) {
+                // The code's own row, from the readout the camera reported.
+                (Some(delay), _) => (r + delay, 1.0 - weight),
+                // Referred to the picture's top row through the measured slope.
+                (None, Some((centre, height))) => (r, 1.0 - (weight - slope * centre / height)),
+                (None, None) => (r, 1.0 - weight),
+            };
+            BlendPoint {
+                index: o.index,
+                r,
+                u,
+                exposure: o.exposure,
+            }
         })
         .collect();
-    let u: Vec<f64> = points.iter().map(|p| p.2).collect();
-    let spread = quantile(&u, 0.9) - quantile(&u, 0.1);
+    let u: Vec<f64> = points.iter().map(|p| p.u).collect();
     let max_exposure = camera_interval.unwrap_or(d);
-    let fitted = (spread >= MIN_PHASE_SPREAD)
-        .then(|| theil_sen(&points.iter().map(|p| (p.2, p.1)).collect::<Vec<_>>()))
-        .flatten()
-        .map(|(_, slope)| -slope)
-        .filter(|&e| e > 0.0 && e <= 1.5 * max_exposure);
-    let exposure = fitted.unwrap_or(max_exposure / 2.0);
+    let exposure = match reported_exposure(mixed.iter().map(|(o, _)| *o)) {
+        Some(e) => Exposure::Reported(e),
+        None => {
+            let spread = quantile(&u, 0.9) - quantile(&u, 0.1);
+            (spread >= MIN_PHASE_SPREAD)
+                .then(|| theil_sen(&points.iter().map(|p| (p.u, p.r)).collect::<Vec<_>>()))
+                .flatten()
+                .map(|(_, slope)| -slope)
+                .filter(|&e| e > 0.0 && e <= 1.5 * max_exposure)
+                .map_or(Exposure::Unknown { max: max_exposure }, Exposure::Measured)
+        }
+    };
+    // Frames that reported their exposure are timed with their own; the
+    // others with the capture's (the middle of the range, if it's unknown).
+    let common = exposure.known().unwrap_or(max_exposure / 2.0);
+    let switch = |p: &BlendPoint, e: f64| p.r + p.exposure.unwrap_or(e) * p.u;
     let offsets: Vec<(usize, f64)> = points
         .iter()
-        .map(|&(i, r, u)| (i, r + exposure * u))
+        .map(|p| (p.index, switch(p, common)))
         .collect();
     let values: Vec<f64> = offsets.iter().map(|p| p.1).collect();
     let offset = median(values.clone());
@@ -205,32 +283,41 @@ fn blend_timing(
     let n = values.len() as f64;
     let statistical = 2.0 * 1.25 * sigma / n.sqrt();
     let typical_u = median(u.clone());
-    let uncertainty = match fitted {
-        Some(_) => statistical + typical_u * exposure * 0.1,
-        None => statistical + typical_u * max_exposure / 2.0,
+    let uncertainty = match exposure {
+        Exposure::Unknown { max } => statistical + typical_u * max / 2.0,
+        _ => statistical + typical_u * common * 0.1,
     };
     // Judder is a jump in switch time. With the exposure unknown, judge it at
     // the longest exposure allowed, which shows the biggest jump a given
     // change in β can mean (noise in β is far smaller).
-    let judder = match fitted {
-        Some(_) => count_judder(&values, d),
-        None => count_judder(
-            &points
-                .iter()
-                .map(|&(_, r, u)| r + max_exposure * u)
-                .collect::<Vec<_>>(),
+    let judder = match exposure {
+        Exposure::Unknown { max } => count_judder(
+            &points.iter().map(|p| switch(p, max)).collect::<Vec<_>>(),
             d,
         ),
+        _ => count_judder(&values, d),
     };
     Some(DisplayTiming {
         offset,
         uncertainty,
         method: TimingMethod::Blend,
-        exposure: fitted,
-        max_exposure: fitted.is_none().then_some(max_exposure),
+        exposure: Some(exposure),
         frame_offsets: offsets,
         judder,
     })
+}
+
+/// A frame caught mid-switch, as [`blend_timing`] uses it.
+struct BlendPoint {
+    /// Index into the scan's video samples.
+    index: usize,
+    /// When a row began its exposure (the code's middle row, or the picture's
+    /// top row without a reported readout), less `(M+1)/fps` (seconds).
+    r: f64,
+    /// The share of that row's exposure before the switch.
+    u: f64,
+    /// The exposure the camera reported.
+    exposure: Option<f64>,
 }
 
 /// Frames whose offset is more than [`JUDDER_FRAMES`] from the median of
@@ -248,34 +335,40 @@ fn count_judder(offsets: &[f64], d: f64) -> usize {
 
 /// The timeline from the bounds every observation puts on it. A frame read
 /// from a picture is the one on screen for most of the exposure, so at its
-/// middle: `exposure` (seconds) moves each observation there from the
-/// exposure's start, where camera timestamps are.
+/// middle: half the exposure (each frame's own, if the camera reported it,
+/// else `exposure` seconds) after the exposure's start, where camera
+/// timestamps are, and at the code's row if the camera reported its readout.
+/// `reported` says the exposure is the camera's, not an estimate.
 fn bound_timing(
     observations: &[Observation],
     fps: FrameRate,
     exposure: f64,
+    reported: bool,
 ) -> Option<DisplayTiming> {
     if observations.is_empty() {
         return None;
     }
     let d = fps.frame_duration();
-    let mid = exposure / 2.0;
+    let seen = |o: &Observation| {
+        o.time + o.code_delay.unwrap_or(0.0) + o.exposure.unwrap_or(exposure) / 2.0
+    };
     // Seeing frame N at time t means offset ∈ [t − (N+1)/fps, t − N/fps].
     let mut lower: Vec<f64> = observations
         .iter()
-        .map(|o| o.time + mid - (f64::from(o.frame) + 1.0) * d)
+        .map(|o| seen(o) - (f64::from(o.frame) + 1.0) * d)
         .collect();
     let mut upper: Vec<f64> = observations
         .iter()
-        .map(|o| o.time + mid - f64::from(o.frame) * d)
+        .map(|o| seen(o) - f64::from(o.frame) * d)
         .collect();
     lower.sort_by(f64::total_cmp);
     upper.sort_by(f64::total_cmp);
     // Ignore the most extreme 2% on each side (frames caught mid-transition).
     let trim = observations.len() / 50;
     let (lo, hi) = (lower[lower.len() - 1 - trim], upper[trim]);
-    // The exposure is only roughly known; allow for half of its effect again.
-    let slack = mid / 2.0;
+    // An estimated exposure is only roughly known; allow for half of its
+    // effect again.
+    let slack = if reported { 0.0 } else { exposure / 4.0 };
     if lo <= hi {
         return Some(DisplayTiming {
             offset: (lo + hi) / 2.0,
@@ -286,7 +379,7 @@ fn bound_timing(
     // Inconsistent observations (judder, a stall): use the median mid-frame estimate.
     let mids: Vec<f64> = observations
         .iter()
-        .map(|o| o.time + mid - (f64::from(o.frame) + 0.5) * d)
+        .map(|o| seen(o) - (f64::from(o.frame) + 0.5) * d)
         .collect();
     Some(DisplayTiming {
         offset: median(mids),
@@ -361,21 +454,31 @@ mod tests {
         }
     }
 
-    /// A camera at `camera_fps` with exposure `e`, filming a display that shows
-    /// frame N from `start + N/fps`.
-    fn observe(fps: f64, camera_fps: f64, e: f64, start: f64, seconds: f64) -> Vec<Observation> {
+    /// A camera at `camera_fps` filming a display that shows frame N from
+    /// `start + N/fps`. The QR code's middle row begins its exposure `delay`
+    /// after each picture's timestamp (a rolling shutter), and is exposed for
+    /// `exposure(t)`. The camera reports both.
+    fn film(
+        fps: f64,
+        camera_fps: f64,
+        exposure: impl Fn(f64) -> f64,
+        delay: f64,
+        start: f64,
+        seconds: f64,
+    ) -> Vec<Observation> {
         (0..(seconds * camera_fps) as usize)
             .filter_map(|k| {
                 let t = 0.0071 + k as f64 / camera_fps;
+                let (row, e) = (t + delay, exposure(t));
                 let at = |t: f64| ((t - start) * fps).floor();
-                let (a, b) = (at(t), at(t + e));
+                let (a, b) = (at(row), at(row + e));
                 if a < 0.0 {
                     return None;
                 }
-                // Share of [t, t+e] after the switch to a+1 (exposure shorter than a frame).
+                // Share of the row's exposure after the switch to a+1 (exposure shorter than a frame).
                 let w = if b > a {
                     let switch = start + (a + 1.0) / fps;
-                    (t + e - switch) / e
+                    (row + e - switch) / e
                 } else {
                     0.0
                 };
@@ -388,9 +491,28 @@ mod tests {
                     blend: Some(blend(a as u32, w)),
                     code_rows: None,
                     corners: None,
+                    exposure: Some(e),
+                    code_delay: Some(delay),
                 })
             })
             .collect()
+    }
+
+    /// The same observations from a camera that doesn't report its exposure or readout.
+    fn unreported(observations: Vec<Observation>) -> Vec<Observation> {
+        observations
+            .into_iter()
+            .map(|o| Observation {
+                exposure: None,
+                code_delay: None,
+                ..o
+            })
+            .collect()
+    }
+
+    /// A camera with exposure `e` and no rolling shutter, reporting nothing.
+    fn observe(fps: f64, camera_fps: f64, e: f64, start: f64, seconds: f64) -> Vec<Observation> {
+        unreported(film(fps, camera_fps, |_| e, 0.0, start, seconds))
     }
 
     #[test]
@@ -404,7 +526,7 @@ mod tests {
         let t = display_timing(&obs, fps, Some(1.0 / 30.0)).unwrap();
         assert_eq!(t.method, TimingMethod::Blend);
         // The exposure can't be measured (no phase drift): assumed ≤ 1/30 s.
-        assert_eq!(t.exposure, None);
+        assert_eq!(t.exposure, Some(Exposure::Unknown { max: 1.0 / 30.0 }));
         assert!(
             (t.offset - start).abs() <= t.uncertainty + 1e-4,
             "offset {} ± {}",
@@ -413,8 +535,21 @@ mod tests {
         );
         assert!(t.uncertainty < 0.01, "± {}", t.uncertainty);
         // Bounds alone are stuck at half a frame.
-        let bounds = bound_timing(&obs, fps, 0.0).unwrap();
+        let bounds = bound_timing(&obs, fps, 0.0, false).unwrap();
         assert!(bounds.uncertainty > 0.012);
+    }
+
+    #[test]
+    fn a_locked_camera_that_reports_its_exposure_is_timed_exactly() {
+        // As above, but the camera says how long each exposure was.
+        let fps: FrameRate = "30".parse().unwrap();
+        let start = 0.0071 - 0.9 / 30.0 + 0.2;
+        let obs = film(30.0, 30.0, |_| 0.025, 0.0, start, 6.0);
+        let t = display_timing(&obs, fps, Some(1.0 / 30.0)).unwrap();
+        assert_eq!(t.method, TimingMethod::Blend);
+        assert_eq!(t.exposure, Some(Exposure::Reported(0.025)));
+        assert!((t.offset - start).abs() < 1e-6, "offset {}", t.offset);
+        assert!(t.uncertainty < 0.001, "± {}", t.uncertainty);
     }
 
     #[test]
@@ -424,11 +559,91 @@ mod tests {
         let obs = observe(30.0, 29.5, 0.02, 0.137, 6.0);
         let t = display_timing(&obs, fps, Some(1.0 / 29.5)).unwrap();
         assert_eq!(t.method, TimingMethod::Blend);
-        let e = t.exposure.expect("exposure measured");
+        let Some(Exposure::Measured(e)) = t.exposure else {
+            panic!("exposure {:?}", t.exposure);
+        };
         assert!((e - 0.02).abs() < 0.001, "exposure {e}");
         assert!((t.offset - 0.137).abs() < 0.0005, "offset {}", t.offset);
         assert!(t.uncertainty < 0.002, "± {}", t.uncertainty);
         assert_eq!(t.judder, 0);
+    }
+
+    #[test]
+    fn reported_exposures_follow_auto_exposure() {
+        // Auto-exposure lengthens the exposure from 8 to 24 ms halfway through.
+        let fps: FrameRate = "30".parse().unwrap();
+        let exposure = |t: f64| if t < 3.0 { 0.008 } else { 0.024 };
+        let obs = film(30.0, 29.5, exposure, 0.0, 0.137, 6.0);
+        // The worst error in a frame's own switch time.
+        let worst = |t: &DisplayTiming| {
+            t.frame_offsets
+                .iter()
+                .map(|&(_, a)| (a - 0.137).abs())
+                .fold(0.0, f64::max)
+        };
+        let t = display_timing(&obs, fps, Some(1.0 / 29.5)).unwrap();
+        assert_eq!(t.method, TimingMethod::Blend);
+        assert!((t.offset - 0.137).abs() < 1e-6, "offset {}", t.offset);
+        assert!(worst(&t) < 1e-6, "{} s", worst(&t));
+        assert_eq!(t.judder, 0);
+        // One exposure fitted to the whole capture can't follow the change:
+        // the frames exposed for 8 ms are timed as if for 24.
+        let fitted = display_timing(&unreported(obs), fps, Some(1.0 / 29.5)).unwrap();
+        assert!(worst(&fitted) > 0.005, "{} s", worst(&fitted));
+    }
+
+    #[test]
+    fn a_reported_readout_times_the_codes_row() {
+        // The code's middle row starts its exposure 9 ms after the picture's
+        // top row, and its blend is too small to show the slope.
+        let fps: FrameRate = "30".parse().unwrap();
+        let obs = film(30.0, 29.5, |_| 0.02, 0.009, 0.137, 6.0);
+        let t = display_timing(&obs, fps, Some(1.0 / 29.5)).unwrap();
+        assert!((t.offset - 0.137).abs() < 1e-6, "offset {}", t.offset);
+        // Without it, the switch is timed as if the code were at the top.
+        let without: Vec<Observation> = obs
+            .into_iter()
+            .map(|o| Observation {
+                code_delay: None,
+                ..o
+            })
+            .collect();
+        let t = display_timing(&without, fps, Some(1.0 / 29.5)).unwrap();
+        assert!(
+            (t.offset - (0.137 - 0.009)).abs() < 1e-6,
+            "offset {}",
+            t.offset
+        );
+    }
+
+    #[test]
+    fn a_reported_exposure_centres_the_bounds() {
+        // About 25 fps filming 30 with 20 ms exposures, no blends measured:
+        // each picture shows the frame on screen at the middle of its exposure.
+        let fps: FrameRate = "30".parse().unwrap();
+        let no_blends = |obs: Vec<Observation>| -> Vec<Observation> {
+            obs.into_iter()
+                .map(|o| Observation { blend: None, ..o })
+                .collect()
+        };
+        let obs = no_blends(film(30.0, 24.93, |_| 0.02, 0.0, 0.137, 6.0));
+        let t = display_timing(&obs, fps, Some(0.04)).unwrap();
+        assert_eq!(t.method, TimingMethod::Bounds);
+        assert_eq!(t.exposure, Some(Exposure::Reported(0.02)));
+        assert!((t.offset - 0.137).abs() < 0.001, "offset {}", t.offset);
+        assert!(
+            (t.offset - 0.137).abs() <= t.uncertainty,
+            "± {}",
+            t.uncertainty
+        );
+        // Without it, the pictures are taken as instants at their timestamps:
+        // half an exposure early.
+        let t = display_timing(&unreported(obs), fps, Some(0.04)).unwrap();
+        assert!(
+            (t.offset - (0.137 - 0.01)).abs() < 0.002,
+            "offset {}",
+            t.offset
+        );
     }
 
     #[test]
@@ -443,6 +658,8 @@ mod tests {
                 blend: None,
                 code_rows: None,
                 corners: None,
+                exposure: None,
+                code_delay: None,
             })
             .collect();
         assert!(phase_consistency(&copy, fps) > 0.99);

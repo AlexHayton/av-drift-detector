@@ -42,7 +42,7 @@ Capture  camera; display timing from 356 frames caught mid-switch, known to ±5.
          (the camera's exposure couldn't be measured, so up to 33.3 ms is allowed for. A longer recording, or a camera rate that isn't a multiple of 30 fps, narrows this.)
 ```
 
-Phones' "30 fps" is rarely exactly 30.000, so even a nominal match drifts slowly through the frame: a longer recording helps.
+Phones' "30 fps" is rarely exactly 30.000, so even a nominal match drifts slowly through the frame: a longer recording helps. An app that reads the camera's frames itself can pass each frame's exposure time, which phones report, and then the rate doesn't matter (see [Bring your own decoder](library.md#bring-your-own-decoder)).
 
 Good combinations:
 
@@ -70,7 +70,7 @@ The measurement is end to end: from the moment the device presents a frame to th
 - **sound travel**: about 2.9 ms per metre from speaker to microphone. Subtract it if it matters;
 - **the recording device's own A/V offset.** Phones usually record sound and picture within a few milliseconds of each other, but not always. For absolute numbers, check your phone against a reference (a display you trust), or use one camera throughout and compare devices relative to each other.
 
-Camera timestamps are taken to mark the start of each picture's exposure, of its top row, as phones record them; the analyzer allows for a rolling shutter from the way the blend changes down the QR code. A recorder that timestamps the middle of the exposure instead shifts the result by half the exposure time.
+Camera timestamps are taken to mark the start of each picture's exposure, of its top row, as phones record them; the analyzer allows for a rolling shutter by the readout time the camera reports, if it's given one, and otherwise from the way the blend changes down the QR code. A recorder that timestamps the middle of the exposure instead shifts the result by half the exposure time.
 
 For context, ITU-R BT.1359 puts the threshold at which viewers notice lip-sync errors at roughly 45 ms of audio lead (audio early, negative here) and 125 ms of audio lag (positive here).
 

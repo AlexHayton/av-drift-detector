@@ -456,6 +456,48 @@ fn a_camera_locked_to_the_pattern_reports_an_honest_uncertainty() {
 }
 
 #[test]
+fn a_locked_camera_that_reports_its_exposure_is_timed_to_a_millisecond() {
+    // As above, but the camera says how long each exposure was and how long
+    // its rolling shutter takes to read out, as phones do: the frames caught
+    // mid-switch then time the display without guessing the exposure.
+    let mut pattern = Pattern::new("30", 1280, 720);
+    let (w, h) = pattern.size();
+    for (first, exposure) in [(0.2 + 0.7 / 30.0, 0.025), (0.2 + 0.4 / 30.0, 0.03)] {
+        let camera = Camera {
+            fps: 30.0,
+            camera_fps: 30.0,
+            exposure,
+            readout: 0.008,
+            start: 0.2,
+            first,
+            size: (w, h),
+            lens: handheld(w, h),
+            blur: 0.8,
+            noise: 6.0,
+        };
+        let delay = 0.23;
+        let mut video = read_all(camera.film(&mut pattern, 3.0));
+        for v in &mut video {
+            v.exposure = Some(camera.exposure);
+            v.readout = Some(camera.readout);
+        }
+        let report = analyse(video, audio(pattern.fps, delay, 3.8), (w, h));
+        let text = report.summary_text();
+        assert_eq!(report.capture, CaptureMode::Camera, "{text}");
+        assert_eq!(report.video_timing, Some("blend"), "{text}");
+        assert_eq!(report.exposure_source, Some("reported"), "{text}");
+        assert!(text.contains("as the camera reported"), "{text}");
+        let uncertainty = report.video_timing_uncertainty_ms.unwrap();
+        assert!(uncertainty < 2.0, "±{uncertainty}\n{text}");
+        let error = mean_ms(&report) - camera.truth_ms(delay);
+        assert!(
+            error.abs() < 1.0,
+            "off by {error:.2} ms ± {uncertainty:.2}\n{text}"
+        );
+    }
+}
+
+#[test]
 fn a_screen_recording_at_another_rate_is_timed_as_sampled() {
     // A pixel-perfect recording at 25 fps of a 30 fps video: each picture is
     // whatever frame was on screen, so frames come at every phase.

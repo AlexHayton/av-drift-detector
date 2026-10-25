@@ -140,8 +140,12 @@ pub struct DriftReport {
     /// Camera captures: how the display's timeline was found: `blend`, from
     /// frames that caught it mid-switch, or `bounds`, from frame numbers alone.
     pub video_timing: Option<&'static str>,
-    /// The camera's exposure time, where the capture let it be measured.
+    /// The camera's exposure time, where the camera reported it (the median)
+    /// or the capture let it be measured.
     pub exposure_ms: Option<f64>,
+    /// Where [`exposure_ms`](Self::exposure_ms) came from: `reported`, by the
+    /// camera with each frame, or `measured`, from the blends.
+    pub exposure_source: Option<&'static str>,
     /// The longest exposure allowed for, where it couldn't be measured.
     pub max_exposure_ms: Option<f64>,
     /// Frames where the display switched noticeably early or late (judder).
@@ -261,6 +265,10 @@ impl DriftReport {
                     s.mixed_frames
                 );
                 match (self.exposure_ms, self.max_exposure_ms) {
+                    (Some(e), _) if self.exposure_source == Some("reported") => {
+                        let _ =
+                            writeln!(out, "         (exposure {e:.1} ms, as the camera reported)");
+                    }
                     (Some(e), _) => {
                         let _ = writeln!(out, "         (exposure measured at {e:.1} ms)");
                     }
@@ -277,6 +285,9 @@ impl DriftReport {
             }
             (CaptureMode::Camera, Some(u)) => {
                 let _ = writeln!(out, "Capture  camera; display timing known to ±{u:.2} ms");
+                if let (Some(e), Some("reported")) = (self.exposure_ms, self.exposure_source) {
+                    let _ = writeln!(out, "         (exposure {e:.1} ms, as the camera reported)");
+                }
                 if u > 0.25 * 1000.0 / self.fps.as_f64() {
                     let _ = writeln!(
                         out,

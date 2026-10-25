@@ -117,8 +117,13 @@ pub struct DriftReport {
     /// Camera captures: how the display's timeline was found.
     #[napi(ts_type = "'blend' | 'bounds'")]
     pub video_timing: Option<String>,
-    /// The camera's exposure time, where the capture let it be measured.
+    /// The camera's exposure time, where the camera reported it (the median)
+    /// or the capture let it be measured.
     pub exposure_ms: Option<f64>,
+    /// Where `exposureMs` came from: reported by the camera with each frame,
+    /// or measured from the blends.
+    #[napi(ts_type = "'reported' | 'measured'")]
+    pub exposure_source: Option<String>,
     /// The longest exposure allowed for, where it couldn't be measured.
     pub max_exposure_ms: Option<f64>,
     /// Frames the display showed noticeably early or late.
@@ -163,6 +168,7 @@ impl From<avd::DriftReport> for DriftReport {
             video_timing_uncertainty_ms: r.video_timing_uncertainty_ms,
             video_timing: r.video_timing.map(Into::into),
             exposure_ms: r.exposure_ms,
+            exposure_source: r.exposure_source.map(Into::into),
             max_exposure_ms: r.max_exposure_ms,
             display_judder: count(r.display_judder),
             alternative: r.alternative.map(|a| AlternativeReading {
@@ -563,6 +569,11 @@ pub struct CapturedFrame {
     pub stamp: Option<FrameStamp>,
     /// Whether a QR code was found, even if it couldn't be read.
     pub qr_located: Option<bool>,
+    /// Camera frames: the exposure time in seconds, if the camera reported it.
+    pub exposure: Option<f64>,
+    /// Camera frames: the rolling shutter's readout in seconds, if the camera
+    /// reported it: row `y` began its exposure `readout · y / height` after `time`.
+    pub readout: Option<f64>,
 }
 
 impl From<&VideoSample> for CapturedFrame {
@@ -571,6 +582,8 @@ impl From<&VideoSample> for CapturedFrame {
             time: v.time,
             stamp: v.stamp.map(Into::into),
             qr_located: Some(v.qr_located),
+            exposure: v.exposure,
+            readout: v.readout,
         }
     }
 }
@@ -595,8 +608,11 @@ impl StampReader {
         }
     }
 
-    /// Reads the next frame: an 8-bit luma (Y) plane shown at `time` seconds.
+    /// Reads the next frame: an 8-bit luma (Y) plane shown at `time` seconds
+    /// (for a camera, when its top row's exposure began). Pass the camera's
+    /// `exposure` and rolling-shutter `readout` (seconds) if it reports them.
     #[napi]
+    #[allow(clippy::too_many_arguments)]
     pub fn read(
         &mut self,
         luma: Uint8Array,
@@ -604,9 +620,15 @@ impl StampReader {
         height: u32,
         time: f64,
         stride: Option<u32>,
+        exposure: Option<f64>,
+        readout: Option<f64>,
     ) -> Result<CapturedFrame> {
         let view = plane(&luma, width, height, stride)?;
-        let sample = self.inner.read(&view, time);
+        let sample = VideoSample {
+            exposure,
+            readout,
+            ..self.inner.read(&view, time)
+        };
         self.frames.push(sample);
         Ok((&sample).into())
     }
@@ -682,6 +704,8 @@ impl Capture {
                     stamp: f.stamp.as_ref().map(FrameStamp::to_core).transpose()?,
                     qr_located: f.qr_located.unwrap_or(false),
                     old_format: false,
+                    exposure: f.exposure,
+                    readout: f.readout,
                 })
             })
             .collect::<Result<Vec<_>>>()?;

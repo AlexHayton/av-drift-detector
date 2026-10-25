@@ -99,6 +99,8 @@ fn measure(frames: &[(f64, Vec<u8>)], width: usize, height: usize, audio: Vec<f3
 
 Timestamps for video and audio must share one clock (seconds). Audio is mono `f32` at any sample rate.
 
+For a camera, a frame's time is when its top row's exposure began, which is what phones' camera APIs record (Android's `SENSOR_TIMESTAMP`). Pass it as it is, without moving it to the middle of the exposure: the analyzer allows for the exposure itself. If the camera reports each frame's exposure time and rolling-shutter readout (Android's `SENSOR_EXPOSURE_TIME` and `SENSOR_ROLLING_SHUTTER_SKEW`, or the exposure in iOS's EXIF attachment), set `VideoSample::exposure` and `VideoSample::readout` (seconds) on the frames `StampReader` returns. With them, a camera locked to the pattern's rate (30 fps filming 30 fps, phones' default) is timed to a millisecond or two instead of a third of a frame, and changes in auto-exposure are followed frame by frame.
+
 If your decoder hands over audio in timestamped chunks, `media::AudioTrackBuilder` assembles them into one continuous `AudioTrack` the way `analyze` does: gaps are filled with silence, overlaps dropped, and timestamp rounding ignored.
 
 Read frames in order with one `StampReader`: it looks for the QR code first where it was last seen, at native resolution, which is faster and finds far more codes in camera footage than searching each whole frame. For a single image, `pattern::decode_frame` reads one frame, and `pattern::qr::search(&view, roi)` reports where a QR code is (with its corners), even one that couldn't be decoded.

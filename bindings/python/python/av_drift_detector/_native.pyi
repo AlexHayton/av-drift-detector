@@ -31,7 +31,15 @@ class StampReader:
 
     def __init__(self, *, try_qr: bool = True) -> None: ...
     def read(
-        self, luma: Buffer, width: int, height: int, time: float, stride: int | None = None
+        self,
+        luma: Buffer,
+        width: int,
+        height: int,
+        time: float,
+        stride: int | None = None,
+        *,
+        exposure: float | None = None,
+        readout: float | None = None,
     ) -> Any: ...
     def finish(self) -> list[Any]: ...
 

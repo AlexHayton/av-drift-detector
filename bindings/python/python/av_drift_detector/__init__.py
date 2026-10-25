@@ -165,8 +165,12 @@ class DriftReport(TypedDict):
     video_timing_uncertainty_ms: float | None
     #: Camera captures: ``"blend"`` (from frames caught mid-switch) or ``"bounds"``.
     video_timing: Literal["blend", "bounds"] | None
-    #: The camera's exposure time, where the capture let it be measured.
+    #: The camera's exposure time, where the camera reported it (the median)
+    #: or the capture let it be measured.
     exposure_ms: float | None
+    #: Where ``exposure_ms`` came from: reported by the camera with each
+    #: frame, or measured from the blends.
+    exposure_source: Literal["reported", "measured"] | None
     #: The longest exposure allowed for, where it couldn't be measured.
     max_exposure_ms: float | None
     #: Frames the display showed noticeably early or late.
@@ -195,12 +199,18 @@ class GenerateSummary(TypedDict):
 
 
 class CapturedFrame(TypedDict):
-    """A frame you decoded: when it was shown (seconds) and its stamp, if readable."""
+    """A frame you decoded: when it was shown (seconds; for a camera, when its
+    top row's exposure began) and its stamp, if readable."""
 
     time: float
     stamp: NotRequired[FrameStamp | None]
     #: Whether a QR code was found, even if it couldn't be read.
     qr_located: NotRequired[bool]
+    #: Camera frames: the exposure time in seconds, if the camera reported it.
+    exposure: NotRequired[float | None]
+    #: Camera frames: the rolling shutter's readout in seconds, if the camera
+    #: reported it: row ``y`` began its exposure ``readout * y / height`` after ``time``.
+    readout: NotRequired[float | None]
 
 
 class CapturedAudio(TypedDict):
@@ -305,10 +315,22 @@ class StampReader:
         self._native = _native.StampReader(try_qr=try_qr)
 
     def read(
-        self, luma: Buffer, width: int, height: int, time: float, stride: int | None = None
+        self,
+        luma: Buffer,
+        width: int,
+        height: int,
+        time: float,
+        stride: int | None = None,
+        *,
+        exposure: float | None = None,
+        readout: float | None = None,
     ) -> CapturedFrame:
-        """Reads the next frame, an 8-bit luma (Y) plane shown at ``time`` seconds."""
-        return self._native.read(luma, width, height, time, stride)
+        """Reads the next frame, an 8-bit luma (Y) plane shown at ``time`` seconds
+        (for a camera, when its top row's exposure began). Pass the camera's
+        ``exposure`` and rolling-shutter ``readout`` (seconds) if it reports them."""
+        return self._native.read(
+            luma, width, height, time, stride, exposure=exposure, readout=readout
+        )
 
     def finish(self) -> list[CapturedFrame]:
         """Every frame read so far, with any that could only be identified

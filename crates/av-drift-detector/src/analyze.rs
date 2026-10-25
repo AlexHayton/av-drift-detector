@@ -20,7 +20,7 @@ use std::path::Path;
 
 use crate::audio::code::ID_MODULUS;
 use crate::audio::{AudioCell, CellDetector, ToneCode};
-use crate::camera::{DisplayTiming, Observation, display_timing, phase_consistency};
+use crate::camera::{DisplayTiming, Exposure, Observation, display_timing, phase_consistency};
 use crate::media::{AudioTrack, MediaScan};
 use crate::pattern::StampSource;
 use crate::report::{
@@ -158,6 +158,7 @@ pub fn analyze_scan(scan: &MediaScan, opts: &AnalyzeOptions, input: String) -> R
         .iter()
         .filter(|o| o.blend.is_some_and(|b| b.is_mixed()))
         .count();
+    let exposure = display.as_ref().and_then(|d| d.exposure);
     Ok(DriftReport {
         input,
         fps,
@@ -165,14 +166,12 @@ pub fn analyze_scan(scan: &MediaScan, opts: &AnalyzeOptions, input: String) -> R
         capture: detected.mode,
         video_timing_uncertainty_ms: display.as_ref().map(|d| d.uncertainty * 1000.0),
         video_timing: display.as_ref().map(|d| d.method.name()),
-        exposure_ms: display
-            .as_ref()
-            .and_then(|d| d.exposure)
-            .map(|e| e * 1000.0),
-        max_exposure_ms: display
-            .as_ref()
-            .and_then(|d| d.max_exposure)
-            .map(|e| e * 1000.0),
+        exposure_ms: exposure.and_then(Exposure::known).map(|e| e * 1000.0),
+        exposure_source: exposure.and_then(Exposure::source),
+        max_exposure_ms: match exposure {
+            Some(Exposure::Unknown { max }) => Some(max * 1000.0),
+            _ => None,
+        },
         display_judder: display.as_ref().map_or(0, |d| d.judder),
         alternative,
         width: scan.width,

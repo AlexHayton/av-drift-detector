@@ -29,8 +29,12 @@ export declare class PatternRenderer {
 export declare class StampReader {
   /** A reader that falls back to the QR code unless `tryQr` is false. */
   constructor(tryQr?: boolean | undefined | null)
-  /** Reads the next frame: an 8-bit luma (Y) plane shown at `time` seconds. */
-  read(luma: Uint8Array, width: number, height: number, time: number, stride?: number | undefined | null): CapturedFrame
+  /**
+   * Reads the next frame: an 8-bit luma (Y) plane shown at `time` seconds
+   * (for a camera, when its top row's exposure began). Pass the camera's
+   * `exposure` and rolling-shutter `readout` (seconds) if it reports them.
+   */
+  read(luma: Uint8Array, width: number, height: number, time: number, stride?: number | undefined | null, exposure?: number | undefined | null, readout?: number | undefined | null): CapturedFrame
   /**
    * Every frame read so far, with any that could only be identified after
    * seeing later frames filled in: pass these to `analyzeFrames`.
@@ -125,6 +129,13 @@ export interface CapturedFrame {
   stamp?: FrameStamp
   /** Whether a QR code was found, even if it couldn't be read. */
   qrLocated?: boolean
+  /** Camera frames: the exposure time in seconds, if the camera reported it. */
+  exposure?: number
+  /**
+   * Camera frames: the rolling shutter's readout in seconds, if the camera
+   * reported it: row `y` began its exposure `readout · y / height` after `time`.
+   */
+  readout?: number
 }
 
 /** The result of analysing a capture: the same content as `av-drift analyze --json`. */
@@ -140,8 +151,16 @@ export interface DriftReport {
   videoTimingUncertaintyMs?: number
   /** Camera captures: how the display's timeline was found. */
   videoTiming?: 'blend' | 'bounds'
-  /** The camera's exposure time, where the capture let it be measured. */
+  /**
+   * The camera's exposure time, where the camera reported it (the median)
+   * or the capture let it be measured.
+   */
   exposureMs?: number
+  /**
+   * Where `exposureMs` came from: reported by the camera with each frame,
+   * or measured from the blends.
+   */
+  exposureSource?: 'reported' | 'measured'
   /** The longest exposure allowed for, where it couldn't be measured. */
   maxExposureMs?: number
   /** Frames the display showed noticeably early or late. */

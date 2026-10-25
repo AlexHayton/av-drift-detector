@@ -23,7 +23,8 @@ use crate::{Error, FrameRate, Result};
 /// One decoded video frame.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct VideoSample {
-    /// Presentation time in seconds (container timeline).
+    /// Presentation time in seconds (container timeline). For a camera, the
+    /// start of the exposure of the picture's top row, as phones record it.
     pub time: f64,
     /// The stamp read from the frame, if any.
     pub stamp: Option<FrameStamp>,
@@ -32,6 +33,15 @@ pub struct VideoSample {
     /// Whether the frame carries a stamp in an earlier release's format,
     /// which isn't read.
     pub old_format: bool,
+    /// Camera frames: how long the picture was exposed, in seconds, if the
+    /// camera said (phones' capture metadata does). Video files don't record
+    /// it, and the analyzer then works it out from the frames, less exactly.
+    pub exposure: Option<f64>,
+    /// Camera frames: the rolling shutter's readout, in seconds, if the camera
+    /// said: row `y` of a picture `height` rows tall began its exposure
+    /// `readout · y / height` after [`time`](Self::time) (Android's
+    /// `SENSOR_ROLLING_SHUTTER_SKEW`).
+    pub readout: Option<f64>,
 }
 
 /// Decoded audio, downmixed to mono.
