@@ -10,7 +10,7 @@
     "ffmpeg",
     "latency"
   ],
-  "license": "MIT",
+  "license": "BSD-2-Clause-Patent",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/AlexHayton/av-drift-detector.git",

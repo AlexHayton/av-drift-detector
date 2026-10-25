@@ -17,7 +17,7 @@
     "ffmpeg",
     "latency"
   ],
-  "license": "MIT",
+  "license": "BSD-2-Clause-Patent",
   "engines": {
     "node": ">=20"
   },

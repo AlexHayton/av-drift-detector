@@ -83,6 +83,9 @@ test('frames and audio in memory', async () => {
   assert.equal(qr.frameId, 7)
   assert.equal(qr.source, 'qr')
   assert.equal(qr.toneBaseHarmonic, 24)
+  // The code sits on the right of the frame: its corners say where.
+  assert.equal(qr.corners.length, 4)
+  assert.ok(qr.corners.every(([x, y]) => x > 400 && x < 640 && y > 100 && y < 360), JSON.stringify(qr.corners))
   assert.equal(avd.readFrame(luma, 640, 360, null, false), null)
 
   const samples = avd.synthesizeAudio({ fps, delay: 0.012, count: 48000 * 3.5 })
@@ -107,4 +110,66 @@ test('music and length options', () => {
   const timed = new avd.PatternRenderer({ fps: '25', width: 640, height: 360, duration: 6 }).render(0)
   assert.ok(!plain.equals(timed))
   assert.throws(() => new avd.PatternRenderer({ duration: 0 }), /duration must be positive/)
+})
+
+// A camera at `cameraFps` filming the pattern (frame N on screen from N/fps)
+// with `exposure`-second exposures, timestamped at their start: a picture whose
+// exposure spans a switch mixes the two frames. The barcode strip is wiped, as
+// a camera can't read it.
+function filmed(renderer, fps, cameraFps, exposure, seconds) {
+  const frames = new Map()
+  const frame = (n) => {
+    if (!frames.has(n)) {
+      const luma = renderer.render(n)
+      luma.fill(16, 0, renderer.width * 100)
+      frames.set(n, luma)
+    }
+    return frames.get(n)
+  }
+  const shots = []
+  for (let k = 0; k < Math.floor(seconds * cameraFps); k++) {
+    const t = 0.013 + k / cameraFps
+    const a = Math.floor(t * fps)
+    const b = Math.floor((t + exposure) * fps)
+    let luma = frame(a)
+    if (b > a) {
+      const after = (t + exposure - b / fps) / exposure
+      const [x, y] = [frame(a), frame(a + 1)]
+      luma = new Uint8Array(x.length)
+      for (let i = 0; i < x.length; i++) luma[i] = Math.round(x[i] + (y[i] - x[i]) * after)
+    }
+    shots.push({ t, luma })
+  }
+  return shots
+}
+
+test('StampReader times a camera from blended frames', async () => {
+  const renderer = new avd.PatternRenderer({ fps: '25', width: 640, height: 360 })
+  const shots = filmed(renderer, 25, 24, 0.02, 3)
+  const reader = new avd.StampReader()
+  for (const { t, luma } of shots) {
+    assert.equal(reader.read(luma, 640, 360, t).time, t)
+  }
+  const frames = reader.finish()
+  assert.equal(frames.length, shots.length)
+  const stamps = frames.filter((f) => f.stamp).map((f) => f.stamp)
+  assert.ok(stamps.length >= shots.length - 2, `${stamps.length} of ${shots.length} read`)
+  // Mid-switch pictures were read by fitting, with the mix measured.
+  const blended = stamps.filter((s) => s.blend && s.blend.weightNext > 0.05 && s.blend.weightNext < 0.95)
+  assert.ok(blended.length > 10, `${blended.length} blended`)
+  assert.ok(stamps.some((s) => s.source === 'qr_blend'))
+
+  const samples = avd.synthesizeAudio({ fps: '25', delay: 0.012, count: 48000 * 3.5 })
+  const report = await avd.analyzeFrames({
+    frames,
+    audio: { sampleRate: 48000, startTime: 0, samples },
+    width: 640,
+    height: 360,
+  })
+  assert.equal(report.capture, 'camera')
+  assert.equal(report.videoTiming, 'blend')
+  assert.ok(Math.abs(report.exposureMs - 20) < 1.5, `exposure ${report.exposureMs} ms`)
+  assert.equal(report.summary.mixedFrames, blended.length)
+  assert.ok(Math.abs(report.summary.meanMs - 12) < 1, `mean ${report.summary.meanMs} ms`)
+  assert.ok(report.frames.some((f) => f.videoBlend !== undefined && f.videoBlend !== null))
 })

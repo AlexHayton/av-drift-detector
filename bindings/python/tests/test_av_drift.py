@@ -80,13 +80,35 @@ def test_frames_and_audio_in_memory() -> None:
         luma = renderer.render(n)
         assert len(luma) == 640 * 360
         frames.append({"time": n / 25, "stamp": avd.read_frame(luma, 640, 360)})
-    assert frames[42]["stamp"] == {"frame_id": 42, "fps": "25", "tone_base_harmonic": None, "source": "barcode"}
+    stamp = frames[42]["stamp"]
+    assert stamp is not None
+    assert {k: v for k, v in stamp.items() if k != "blend"} == {
+        "frame_id": 42,
+        "fps": "25",
+        "tone_base_harmonic": None,
+        "source": "barcode",
+        "corners": None,
+    }
+    # A clean frame: the fit puts all the weight on frame 42.
+    blend = stamp["blend"]
+    assert blend is not None
+    assert (blend["first"], blend["weight_next"]) == (42, 0.0)
 
     # The QR code alone, with the barcode strip wiped; any bytes-like plane works.
     luma = bytearray(renderer.render(7))
     luma[: 640 * 100] = bytes([16]) * (640 * 100)
     stamp = avd.read_frame(memoryview(luma), 640, 360)
-    assert stamp == {"frame_id": 7, "fps": "25", "tone_base_harmonic": 24, "source": "qr"}
+    assert stamp is not None
+    assert {k: stamp[k] for k in ("frame_id", "fps", "tone_base_harmonic", "source")} == {
+        "frame_id": 7,
+        "fps": "25",
+        "tone_base_harmonic": 24,
+        "source": "qr",
+    }
+    # The code sits on the right of the frame: its corners say where.
+    corners = stamp["corners"]
+    assert corners is not None and len(corners) == 4
+    assert all(400 < x < 640 and 100 < y < 360 for x, y in corners)
     assert avd.read_frame(luma, 640, 360, try_qr=False) is None
 
     samples = avd.synthesize_audio(int(48_000 * 3.5), fps="25", delay=0.012)
@@ -97,6 +119,64 @@ def test_frames_and_audio_in_memory() -> None:
     assert report["capture"] == "file"
     assert report["summary"]["measured"] > 60
     assert report["summary"]["mean_ms"] == pytest.approx(12, abs=0.01)
+
+
+def filmed(
+    renderer: avd.PatternRenderer, fps: float, camera_fps: float, exposure: float, seconds: float
+) -> list[tuple[float, bytes]]:
+    """A camera at ``camera_fps`` filming the pattern (frame N on screen from N/fps)
+    with ``exposure``-second exposures, timestamped at their start: a picture whose
+    exposure spans a switch mixes the two frames. The barcode strip is wiped, as
+    a camera can't read it."""
+    w = renderer.width
+    frames: dict[int, bytes] = {}
+
+    def frame(n: int) -> bytes:
+        if n not in frames:
+            luma = bytearray(renderer.render(n))
+            luma[: w * 100] = bytes([16]) * (w * 100)
+            frames[n] = bytes(luma)
+        return frames[n]
+
+    shots = []
+    for k in range(int(seconds * camera_fps)):
+        t = 0.013 + k / camera_fps
+        a, b = int(t * fps), int((t + exposure) * fps)
+        if b > a:
+            after = (t + exposure - b / fps) / exposure
+            luma = bytes(round(x + (y - x) * after) for x, y in zip(frame(a), frame(a + 1)))
+        else:
+            luma = frame(a)
+        shots.append((t, luma))
+    return shots
+
+
+def test_stamp_reader_times_a_camera_from_blended_frames() -> None:
+    renderer = avd.PatternRenderer(fps="25", width=640, height=360)
+    shots = filmed(renderer, 25.0, 24.0, 0.02, 3.0)
+    reader = avd.StampReader()
+    for t, luma in shots:
+        frame = reader.read(luma, 640, 360, t)
+        assert frame["time"] == t
+    frames = reader.finish()
+    assert len(frames) == len(shots)
+    stamps = [f["stamp"] for f in frames if f.get("stamp")]
+    assert len(stamps) >= len(shots) - 2, f"{len(stamps)} of {len(shots)} read"
+    # Mid-switch pictures were read by fitting, with the mix measured.
+    blended = [s for s in stamps if s["blend"] and 0.05 < s["blend"]["weight_next"] < 0.95]
+    assert len(blended) > 10
+    assert any(s["source"] == "qr_blend" for s in stamps)
+
+    samples = avd.synthesize_audio(int(48_000 * 3.5), fps="25", delay=0.012)
+    audio: avd.CapturedAudio = {"sample_rate": 48_000, "start_time": 0.0, "samples": samples}
+    report = avd.analyze_frames(frames, audio, width=640, height=360)
+    assert report["capture"] == "camera"
+    assert report["video_timing"] == "blend"
+    assert report["exposure_ms"] == pytest.approx(20, abs=1.5)
+    assert report["summary"]["mixed_frames"] == len(blended)
+    assert report["summary"]["mean_ms"] == pytest.approx(12, abs=1)
+    assert report["video_timing_uncertainty_ms"] is not None
+    assert any(f["video_blend"] is not None for f in report["frames"])
 
 
 def test_music_and_length_options() -> None:

@@ -45,6 +45,9 @@ pub struct TextBox {
 ///   stage under it on the left, and the QR code on the right;
 /// * tall frames (width under [`STACK_BELOW_ASPECT`] × height): the text
 ///   across the top, then the stage and the QR code side by side.
+///
+/// Under the stage, along the bottom of the frame, a small line gives the
+/// project's address where there's room.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Layout {
     pub width: usize,
@@ -58,6 +61,10 @@ pub struct Layout {
     /// Where the dancer performs. May be too small to use on tiny frames.
     pub stage: Rect,
     pub qr: Rect,
+    /// The band under the stage, along the bottom of the frame, for the
+    /// project's address. Its text uses the largest whole font scale that
+    /// fits, no larger than the info line's; on tiny frames, none does.
+    pub link: Rect,
 }
 
 impl Layout {
@@ -103,6 +110,16 @@ impl Layout {
             y1: bottom as i32,
         };
 
+        // Between the content and the border, a pixel clear of each, and no
+        // wider than the stage, so it keeps away from the QR code.
+        let gap = (border / 2).max(1);
+        let link = Rect {
+            x0: stage.x0,
+            y0: stage.y1 + gap,
+            x1: stage.x1,
+            y1: height as i32 - border - gap,
+        };
+
         Ok(Layout {
             width,
             height,
@@ -113,6 +130,7 @@ impl Layout {
             info: stack.info,
             stage,
             qr: Rect::new(qr_x as i32, qr_y as i32, side as i32, side as i32),
+            link,
         })
     }
 }
@@ -203,9 +221,14 @@ mod tests {
                 ("info", l.info),
                 ("stage", l.stage),
                 ("qr", l.qr),
+                ("link", l.link),
             ];
             for (i, &(name, r)) in elements.iter().enumerate() {
                 assert!(r.width() > 0 && r.height() > 0, "{w}x{h}: {name} is empty");
+                if name == "link" {
+                    // Below everything else; it may be too short for any text.
+                    assert!(r.y0 >= l.stage.y1 && r.y0 >= l.qr.y1, "{w}x{h}: link {r:?}");
+                }
                 assert!(r.y0 > strip_bottom, "{w}x{h}: {name} overlaps the barcode");
                 assert!(
                     r.x0 >= frame.x0 && r.y0 >= frame.y0 && r.x1 <= frame.x1 && r.y1 <= frame.y1,

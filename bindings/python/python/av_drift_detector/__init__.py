@@ -14,7 +14,7 @@ Reports are the same dicts ``av-drift analyze --json`` writes, so
 ``json.dump(report, f)`` gives the CLI's format. Reading and writing files
 runs the ``ffmpeg`` and ``ffprobe`` programs (FFmpeg 5.1 or later, on ``PATH``
 or at ``AV_DRIFT_FFMPEG`` and ``AV_DRIFT_FFPROBE``); the in-memory functions
-(``read_frame``, ``analyze_frames``, ``PatternRenderer``,
+(``read_frame``, ``StampReader``, ``analyze_frames``, ``PatternRenderer``,
 ``synthesize_audio``) don't need them.
 """
 
@@ -34,7 +34,9 @@ from . import _native
 from ._native import AvDriftError, PatternRenderer
 
 __all__ = [
+    "AlternativeReading",
     "AvDriftError",
+    "Blend",
     "CapturedAudio",
     "CapturedFrame",
     "DriftReport",
@@ -43,6 +45,7 @@ __all__ = [
     "FrameStamp",
     "GenerateSummary",
     "PatternRenderer",
+    "StampReader",
     "analyze",
     "analyze_frames",
     "generate",
@@ -56,6 +59,24 @@ except PackageNotFoundError:  # pragma: no cover - running from a source tree
     __version__ = "0+unknown"
 
 Capture = Literal["auto", "file", "camera"]
+#: Where a stamp came from: the barcode or QR code, decoded, or (``_blend``)
+#: read by fitting a picture caught between two frames.
+StampSource = Literal["barcode", "barcode_blend", "qr", "qr_blend"]
+
+
+class Blend(TypedDict):
+    """A picture read as a mix of two consecutive frames."""
+
+    #: The earlier frame: the picture mixes ``first`` and ``first + 1``.
+    first: int
+    #: The weight of ``first + 1``, 0 to 1: the share of the exposure after the switch.
+    weight_next: float
+    #: How much the weight grows from the code's top row to its bottom row (rolling shutter).
+    slope: float
+    #: Root-mean-square error of the fit (black 0, white 1).
+    rms: float
+    #: The error of the best fit naming another frame, over ``rms``.
+    margin: float
 
 
 class FrameStamp(TypedDict):
@@ -66,7 +87,12 @@ class FrameStamp(TypedDict):
     fps: str | None
     #: The audio tone plan's base harmonic (QR codes only).
     tone_base_harmonic: int | None
-    source: Literal["barcode", "qr"]
+    source: StampSource
+    #: The QR code's corners in frame pixels (top left, top right, bottom right,
+    #: bottom left, as printed), for QR stamps.
+    corners: NotRequired[list[tuple[float, float]] | None]
+    #: How the picture mixed two consecutive frames, where that was measured.
+    blend: NotRequired[Blend | None]
 
 
 class FrameDrift(TypedDict):
@@ -76,7 +102,10 @@ class FrameDrift(TypedDict):
     time: float
     video_frame: int | None
     video_position: float | None
-    stamp_source: Literal["barcode", "qr"] | None
+    stamp_source: StampSource | None
+    #: How far the picture had switched to the next frame (0 to 1), where it
+    #: showed a blend of two frames.
+    video_blend: float | None
     audio_frame: float | None
     #: Video minus audio in ms: positive means the audio is late.
     drift_ms: float | None
@@ -104,6 +133,24 @@ class DriftSummary(TypedDict):
     no_audio: int
     audio_cells: int
     audio_outliers: int
+    #: Median level of each decoded audio cell's weakest tone, in dBFS.
+    audio_level_dbfs: float | None
+    #: Median height of each cell's weakest tone above the noise, in dB.
+    audio_snr_db: float | None
+    #: Frames where a QR code was found but couldn't be read.
+    qr_located_unread: int
+    #: Frames read by fitting the QR code against rendered frames' codes.
+    qr_blend_frames: int
+    #: Frames that caught the display switching between two frames.
+    mixed_frames: int
+
+
+class AlternativeReading(TypedDict):
+    """What a capture would measure if it were the other kind."""
+
+    capture: Literal["file", "camera"]
+    mean_ms: float
+    video_timing_uncertainty_ms: float | None
 
 
 class DriftReport(TypedDict):
@@ -116,6 +163,17 @@ class DriftReport(TypedDict):
     capture: Literal["file", "camera"]
     #: Camera captures: ± how well the display's frame timing is known.
     video_timing_uncertainty_ms: float | None
+    #: Camera captures: ``"blend"`` (from frames caught mid-switch) or ``"bounds"``.
+    video_timing: Literal["blend", "bounds"] | None
+    #: The camera's exposure time, where the capture let it be measured.
+    exposure_ms: float | None
+    #: The longest exposure allowed for, where it couldn't be measured.
+    max_exposure_ms: float | None
+    #: Frames the display showed noticeably early or late.
+    display_judder: int
+    #: When the stamps fit both a digital copy and a camera locked to the
+    #: pattern's rate: what the other reading would say.
+    alternative: AlternativeReading | None
     width: int
     height: int
     offset: float
@@ -141,6 +199,8 @@ class CapturedFrame(TypedDict):
 
     time: float
     stamp: NotRequired[FrameStamp | None]
+    #: Whether a QR code was found, even if it couldn't be read.
+    qr_located: NotRequired[bool]
 
 
 class CapturedAudio(TypedDict):
@@ -227,6 +287,35 @@ def read_frame(
     return _native.read_frame(luma, width, height, stride, try_qr)
 
 
+class StampReader:
+    """Reads the stamps of consecutive frames of one capture.
+
+    It looks for the QR code where the last frame had it, which is faster than
+    :func:`read_frame`, and reads codes a camera caught between two frames,
+    which :func:`read_frame` can't. Read frames in order, then pass
+    :meth:`finish` to :func:`analyze_frames`::
+
+        reader = avd.StampReader()
+        for time, luma in my_frames():
+            reader.read(luma, width, height, time)
+        report = avd.analyze_frames(reader.finish(), audio, width=width, height=height)
+    """
+
+    def __init__(self, *, try_qr: bool = True) -> None:
+        self._native = _native.StampReader(try_qr=try_qr)
+
+    def read(
+        self, luma: Buffer, width: int, height: int, time: float, stride: int | None = None
+    ) -> CapturedFrame:
+        """Reads the next frame, an 8-bit luma (Y) plane shown at ``time`` seconds."""
+        return self._native.read(luma, width, height, time, stride)
+
+    def finish(self) -> list[CapturedFrame]:
+        """Every frame read so far, with any that could only be identified
+        after seeing later frames filled in."""
+        return self._native.finish()
+
+
 def analyze_frames(
     frames: Iterable[CapturedFrame],
     audio: CapturedAudio | None = None,
@@ -239,8 +328,9 @@ def analyze_frames(
     capture: Capture = "auto",
 ) -> DriftReport:
     """Measures drift from frames and audio you decoded yourself (a capture
-    card, WebRTC, a camera). Stamps come from :func:`read_frame`; frame times
-    and ``audio["start_time"]`` must be on the same clock, in seconds.
+    card, WebRTC, a camera). Frames come from :class:`StampReader` (or
+    :func:`read_frame`); frame times and ``audio["start_time"]`` must be on the
+    same clock, in seconds.
     """
     report = _native.analyze_frames(
         frames,

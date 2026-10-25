@@ -52,7 +52,7 @@ av-drift analyze [OPTIONS] <INPUT>
 | `--offset <TIME>` | `0` | Start of the analysis window. |
 | `--duration <TIME>` | to the end | Length of the analysis window. |
 | `--fps <RATE>` | from the stamps | The pattern's frame rate. Only needed for custom rates when the QR code can't be read. |
-| `--capture <auto\|file\|camera>` | `auto` | How the input was made. `file`: a digital copy whose frame timestamps are when each frame starts. `camera`: a camera filming a screen. `auto` picks `camera` when most frames had to be read from the QR code. See [Measuring with a camera](camera.md). |
+| `--capture <auto\|file\|camera>` | `auto` | How the input was made. `file`: a digital copy whose frame timestamps are when each frame starts. `camera`: a camera filming a screen, or anything else that samples the screen at its own rate (a screen recording at another rate). `auto` decides from the stamps' timing and geometry ([how](how-it-works.md#3-lining-them-up)), and says when a capture could be either. See [Measuring with a camera](camera.md). |
 | `--frames` | | Print a row for every frame before the summary. |
 | `--json` | | Print the full report as JSON. |
 | `--csv` | | Print one CSV row per frame. |
@@ -69,7 +69,24 @@ Only the window's frames are reported. Audio is read half a second either side, 
     2.0354        61       58.647     +78.500
 ```
 
-`time` is the frame's presentation time in the capture. `video` is the frame number read from the picture. `audio` is the source position, in frames, of the sound playing at that moment. `drift_ms` is the difference. Notes flag `unreadable`, `no audio`, `N dropped`, `repeat`, and `qr` (stamp read from the QR code). Camera captures add a `video_pos` column: the estimated source position of the picture at that moment.
+`time` is the frame's presentation time in the capture. `video` is the frame number read from the picture. `audio` is the source position, in frames, of the sound playing at that moment. `drift_ms` is the difference. Notes flag `unreadable`, `no audio`, `N dropped`, `repeat`, and where the stamp came from when it isn't the barcode: `qr` (the QR code, decoded), `qr_blend` (the QR code, read by fitting it against the frames' codes) or `barcode_blend` (the barcode, fitted). Camera captures add a `video_pos` column: the estimated source position of the picture at that moment.
+
+### Summary
+
+The text summary's lines:
+
+| Line | Meaning |
+|------|---------|
+| `Pattern` | The pattern's frame rate and where it came from, and the capture's frame size. |
+| `Window` | The analysis window and how many frames it holds. |
+| `Capture` | Camera captures: how the display's timing was found (from frames caught mid-switch, or from frame numbers), how precisely, and the camera's exposure where it could be measured. Also any display judder. |
+| `Note` | The capture could be either a digital copy or a camera locked to the pattern's rate (a camera on a stand): what the other reading would be. |
+| `Drift` | Mean, median, range and standard deviation of the drift, and the mean in frames. |
+| `Skew` | The slope of drift against time. |
+| `Frames` | How many frames were measured, and why the others weren't. |
+| `QR` | Frames whose QR code was decoded, read by fitting, or found but unreadable. |
+| `Audio` | Audio frames decoded and discarded, and how loud the tones were and how far above the noise. |
+| `Warning` | Fewer than a fifth of the frames could be measured, and the likely reasons. |
 
 ### JSON (`--json`)
 
@@ -82,6 +99,11 @@ For example, `av-drift analyze sync.mp4 --json --offset 2 --duration 0.02` (a on
   "fps_source": "barcode",
   "capture": "file",
   "video_timing_uncertainty_ms": null,
+  "video_timing": null,
+  "exposure_ms": null,
+  "max_exposure_ms": null,
+  "display_judder": 0,
+  "alternative": null,
   "width": 1280,
   "height": 720,
   "offset": 2.0,
@@ -89,10 +111,10 @@ For example, `av-drift analyze sync.mp4 --json --offset 2 --duration 0.02` (a on
   "summary": {
     "frames": 1,
     "measured": 1,
-    "mean_ms": 78.49998794741867,
-    "median_ms": 78.49998794741867,
-    "min_ms": 78.49998794741867,
-    "max_ms": 78.49998794741867,
+    "mean_ms": 78.49999301156217,
+    "median_ms": 78.49999301156217,
+    "min_ms": 78.49999301156217,
+    "max_ms": 78.49999301156217,
     "stddev_ms": 0.0,
     "skew_ms_per_min": null,
     "skew_ppm": null,
@@ -102,7 +124,12 @@ For example, `av-drift analyze sync.mp4 --json --offset 2 --duration 0.02` (a on
     "no_video_stamp": 0,
     "no_audio": 0,
     "audio_cells": 30,
-    "audio_outliers": 0
+    "audio_outliers": 0,
+    "audio_level_dbfs": -21.952082782321995,
+    "audio_snr_db": 67.87691497802734,
+    "qr_located_unread": 0,
+    "qr_blend_frames": 0,
+    "mixed_frames": 0
   },
   "frames": [
     {
@@ -110,8 +137,9 @@ For example, `av-drift analyze sync.mp4 --json --offset 2 --duration 0.02` (a on
       "video_frame": 60,
       "video_position": 60.0,
       "stamp_source": "barcode",
-      "audio_frame": 57.64735300856887,
-      "drift_ms": 78.49998794741867,
+      "video_blend": 0.0,
+      "audio_frame": 57.64735285679634,
+      "drift_ms": 78.49999301156217,
       "dropped_before": 0,
       "repeated": false,
       "status": "ok"
@@ -126,20 +154,30 @@ For example, `av-drift analyze sync.mp4 --json --offset 2 --duration 0.02` (a on
 | `fps_source` | `barcode`, `qr` or `option`. |
 | `capture` | `file` or `camera` (the mode actually used). |
 | `video_timing_uncertainty_ms` | Camera captures: ± how precisely the display's frame timing was recovered. `null` for files. |
+| `video_timing` | Camera captures: `blend` (timed from frames that caught the display mid-switch) or `bounds` (from frame numbers alone). |
+| `exposure_ms` | Camera captures timed from blends: the camera's exposure time, where the capture let it be measured. |
+| `max_exposure_ms` | Camera captures timed from blends, where the exposure couldn't be measured: the longest allowed for (the camera's frame interval). |
+| `display_judder` | Frames the display showed noticeably early or late. |
+| `alternative` | When the capture could be either a digital copy or a camera locked to the pattern's rate: `{capture, mean_ms, video_timing_uncertainty_ms}` for the other reading. Otherwise `null`. |
 | `summary.*_ms` | Statistics over frames with a drift value; `null` if there are none. |
 | `summary.skew_ms_per_min`, `skew_ppm` | Least-squares slope of drift against time. |
 | `summary.dropped_frames`, `repeated_frames` | From gaps and repeats in frame numbers (file captures only). |
 | `summary.backward_jumps` | Places where the frame number went backwards (e.g. a looped or spliced capture). |
 | `summary.no_video_stamp`, `no_audio` | Frames that couldn't be measured, and why. |
 | `summary.audio_cells`, `audio_outliers` | Audio frames decoded; those discarded for disagreeing with their neighbours. |
+| `summary.audio_level_dbfs`, `audio_snr_db` | The typical level of each decoded audio frame's weakest tone, and its height above the noise. |
+| `summary.qr_located_unread` | Frames where a QR code was found but couldn't be read. |
+| `summary.qr_blend_frames` | Frames read by fitting the QR code against the frames' codes (blended between two frames, too blurred to decode, or tracked from the frame before). |
+| `summary.mixed_frames` | Frames that caught the display switching between two frames. |
 | `frames[].status` | `ok`, `no_video_stamp` or `no_audio`. |
-| `frames[].stamp_source` | `barcode` or `qr`. |
+| `frames[].stamp_source` | `barcode`, `barcode_blend`, `qr` or `qr_blend` (see the per-frame table's notes). |
+| `frames[].video_blend` | How far the picture had switched to the next frame, 0 to 1, where that was measured: 0 for a clean frame. |
 
 ### CSV (`--csv`)
 
 ```text
-time,video_frame,video_position,stamp_source,audio_frame,drift_ms,dropped_before,repeated,status
-2.002000,60,60.000000,barcode,57.647353,78.499988,0,false,ok
+time,video_frame,video_position,stamp_source,video_blend,audio_frame,drift_ms,dropped_before,repeated,status
+2.002000,60,60.000000,barcode,0.0000,57.647353,78.499993,0,false,ok
 ```
 
 Empty fields mean "not available".
@@ -149,5 +187,5 @@ Empty fields mean "not available".
 | Status | Meaning |
 |--------|---------|
 | 0 | Success. |
-| 1 | Error: unreadable input, no video or audio stream, or no frames could be measured. |
+| 1 | Error: unreadable input, no video or audio stream, a capture of a test file in an older format (av-drift 0.3 or earlier), or no frames could be measured. |
 | 2 | `--max-drift` was given and at least one frame exceeded it. |

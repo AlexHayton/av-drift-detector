@@ -68,14 +68,28 @@ The test profile is optimised (`opt-level = 3`), because the signal-processing t
 
 | Tests | What they cover |
 |-------|-----------------|
-| unit tests in `crates/av-drift-detector/src/` | frame-rate arithmetic, barcode and CRC, timecode (including drop-frame), QR payloads, layout, the tone plan, audio detection on clean, noisy, echoey and inverted audio, outlier rejection, and camera timing recovery on synthetic captures |
+| unit tests in `crates/av-drift-detector/src/` | frame-rate arithmetic, barcode (Gray code, CRC, blend fits), timecode (including drop-frame), QR payloads (and recognising old ones), layout, the hopping tone plan, audio detection on clean, noisy, echoey, inverted, quiet and band-limited audio, outlier rejection, QR blend fits and decoding from samples, and camera timing from blends and bounds |
+| `crates/av-drift-detector/tests/robustness.rs` | captures simulated in memory, without FFmpeg, analysed end to end: digital copies rotated, keystoned, blurred, noisy, glared and shown small in 4K; cameras at another rate and locked to the pattern's, with blended exposures, rolling shutters and perspective; a screen recording at another rate; quiet, band-limited, notched and echoey audio; and old-format files |
 | `crates/av-drift-detector/tests/roundtrip.rs` | generate → (re-encode with the `ffmpeg` CLI) → analyze, checked against the known answer: codecs and containers, frame rates, offsets, analysis windows, rescaling, a pipeline audio shift, a dropped frame, blended frames, and a simulated filmed screen |
 | doc tests | the examples in the crate docs, `README.md` and `docs/library.md` |
-| `bindings/node/test/` | generate → analyze through Node, progress, errors, and the in-memory functions |
+| `bindings/node/test/` | generate → analyze through Node, progress, errors, the in-memory functions, and `StampReader` on a simulated camera (blends, exposure and drift checked against the truth) |
 | `bindings/python/tests/` | the same through Python, including a progress callback that raises |
 | `crates/av-drift-detector/tests/ffmpeg_cli.rs` | the `ffmpeg-cli` backend against the linked one: files written by either, codecs, containers, analysis windows and a filmed screen measure the same (run with `--features ffmpeg-cli`) |
 
 The `ffmpeg`-based tests skip themselves if the CLI isn't installed.
+
+### Stress tests
+
+`scripts/stress.py` damages a test clip in some 36 ways with FFmpeg and checks the analyzer against the known answer each time: digital copies rotated, keystoned, blurred, noisy, washed out, glared, shrunk, at CRF 45 or in a bigger picture; simulated cameras (oversampled to 300 fps, averaged over an exposure, timestamped at its start) at other rates and locked to the pattern's; and audio delayed, quiet, filtered, notched, echoey, noisy, denoised, gain-controlled, clock-skewed and re-encoded. It needs FFmpeg with libx264, libopus and libmp3lame, takes a minute or two, and isn't run in CI:
+
+```sh
+cargo build --release
+python3 scripts/stress.py                 # every case
+python3 scripts/stress.py camera audio.   # cases whose names start with these
+python3 scripts/stress.py --keep /tmp/stress   # keep the clips to look at
+```
+
+It prints a table and exits with status 1 if any case is off by more than its tolerance. Cameras whose exposure can't be measured are judged against their own reported uncertainty.
 
 ## Continuous integration
 

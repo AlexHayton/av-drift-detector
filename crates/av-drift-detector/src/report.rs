@@ -61,6 +61,9 @@ pub struct FrameDrift {
     /// `video_frame` for file captures; estimated from the display timing for camera captures.
     pub video_position: Option<f64>,
     pub stamp_source: Option<StampSource>,
+    /// How far the picture had switched to the next frame (0 to 1), where the
+    /// QR code showed a blend of two frames.
+    pub video_blend: Option<f32>,
     /// Source position of the audio playing at `time`, in (fractional) frames.
     pub audio_frame: Option<f64>,
     /// `(video − audio)` in milliseconds: positive means the audio is late.
@@ -99,6 +102,27 @@ pub struct DriftSummary {
     pub audio_cells: usize,
     /// Decoded audio cells discarded because their timing disagreed with their neighbours.
     pub audio_outliers: usize,
+    /// Median level of each decoded cell's weakest readable tone, in dBFS.
+    pub audio_level_dbfs: Option<f64>,
+    /// Median of each decoded cell's weakest tone's height above the noise, in dB.
+    pub audio_snr_db: Option<f64>,
+    /// Frames where a QR code was found but couldn't be read.
+    pub qr_located_unread: usize,
+    /// Frames read by fitting the QR code against rendered frames' codes
+    /// (codes blended between two frames, too blurred to decode, or tracked
+    /// from the frame before).
+    pub qr_blend_frames: usize,
+    /// Frames that caught the display switching between two frames.
+    pub mixed_frames: usize,
+}
+
+/// What a capture would measure if it were the other kind (see
+/// [`DriftReport::alternative`]).
+#[derive(Clone, Debug, Serialize)]
+pub struct AlternativeReading {
+    pub capture: CaptureMode,
+    pub mean_ms: f64,
+    pub video_timing_uncertainty_ms: Option<f64>,
 }
 
 /// The result of analysing a capture.
@@ -113,6 +137,18 @@ pub struct DriftReport {
     /// Camera captures: ± half-width of the display timings consistent with the
     /// frames seen, which bounds the video side's contribution to the error.
     pub video_timing_uncertainty_ms: Option<f64>,
+    /// Camera captures: how the display's timeline was found: `blend`, from
+    /// frames that caught it mid-switch, or `bounds`, from frame numbers alone.
+    pub video_timing: Option<&'static str>,
+    /// The camera's exposure time, where the capture let it be measured.
+    pub exposure_ms: Option<f64>,
+    /// The longest exposure allowed for, where it couldn't be measured.
+    pub max_exposure_ms: Option<f64>,
+    /// Frames where the display switched noticeably early or late (judder).
+    pub display_judder: usize,
+    /// When the stamps fit both a digital copy and a camera locked to the
+    /// pattern's rate (a camera on a stand, say): the other reading.
+    pub alternative: Option<AlternativeReading>,
     pub width: u32,
     pub height: u32,
     pub offset: f64,
@@ -218,6 +254,27 @@ impl DriftReport {
             self.offset, end, s.frames
         );
         match (self.capture, self.video_timing_uncertainty_ms) {
+            (CaptureMode::Camera, Some(u)) if self.video_timing == Some("blend") => {
+                let _ = writeln!(
+                    out,
+                    "Capture  camera; display timing from {} frames caught mid-switch, known to ±{u:.2} ms",
+                    s.mixed_frames
+                );
+                match (self.exposure_ms, self.max_exposure_ms) {
+                    (Some(e), _) => {
+                        let _ = writeln!(out, "         (exposure measured at {e:.1} ms)");
+                    }
+                    (None, Some(max)) => {
+                        let _ = writeln!(
+                            out,
+                            "         (the camera's exposure couldn't be measured, so up to {max:.1} ms is allowed \
+                             for. A longer recording, or a camera rate that isn't a multiple of {} fps, narrows this.)",
+                            self.fps.label()
+                        );
+                    }
+                    _ => {}
+                }
+            }
             (CaptureMode::Camera, Some(u)) => {
                 let _ = writeln!(out, "Capture  camera; display timing known to ±{u:.2} ms");
                 if u > 0.25 * 1000.0 / self.fps.as_f64() {
@@ -234,6 +291,30 @@ impl DriftReport {
                 let _ = writeln!(out, "Capture  camera");
             }
             _ => {}
+        }
+        if self.display_judder > 0 {
+            let _ = writeln!(
+                out,
+                "         display judder at {} frames (shown noticeably early or late)",
+                self.display_judder
+            );
+        }
+        if let Some(alt) = &self.alternative {
+            let other = match alt.capture {
+                CaptureMode::Camera => "a camera locked to the pattern's rate",
+                _ => "a digital copy",
+            };
+            let flag = match alt.capture {
+                CaptureMode::Camera => "camera",
+                _ => "file",
+            };
+            let _ = writeln!(
+                out,
+                "Note     this could also be {other}: then the drift is {}{} (--capture {flag})",
+                ms(Some(alt.mean_ms)),
+                alt.video_timing_uncertainty_ms
+                    .map_or(String::new(), |u| format!(" ± {u:.2} ms"))
+            );
         }
         match s.mean_ms {
             Some(mean) => {
@@ -276,11 +357,72 @@ impl DriftReport {
                 String::new()
             }
         );
+        let qr_read = self
+            .frames
+            .iter()
+            .filter(|f| f.stamp_source == Some(StampSource::Qr))
+            .count();
+        if qr_read + s.qr_blend_frames + s.qr_located_unread > 0 {
+            let _ = writeln!(
+                out,
+                "QR       {qr_read} decoded, {} read by fitting, {} found but unreadable",
+                s.qr_blend_frames, s.qr_located_unread
+            );
+        }
         let _ = write!(out, "Audio    {} frame cells decoded", s.audio_cells);
         if s.audio_outliers > 0 {
             let _ = write!(out, ", {} outliers discarded", s.audio_outliers);
         }
+        if let (Some(level), Some(snr)) = (s.audio_level_dbfs, s.audio_snr_db) {
+            let _ = write!(
+                out,
+                "; tones at {level:.0} dBFS, {snr:.0} dB above the noise"
+            );
+        }
+        if let Some(warning) = self.coverage_warning() {
+            let _ = write!(out, "\nWarning  {warning}");
+        }
         out
+    }
+
+    /// Why few frames could be measured, when that's so.
+    fn coverage_warning(&self) -> Option<String> {
+        let s = &self.summary;
+        if s.frames < 10 || s.measured * 5 >= s.frames {
+            return None;
+        }
+        let mut reasons = Vec::new();
+        if s.audio_cells == 0 {
+            reasons.push("no test tones were found in the audio".to_string());
+        } else if s.no_audio * 2 > s.frames {
+            reasons.push(format!(
+                "{} frames had no decodable audio near them",
+                s.no_audio
+            ));
+        }
+        if s.no_video_stamp * 2 > s.frames {
+            reasons.push(if s.qr_located_unread * 2 > s.no_video_stamp {
+                format!(
+                    "{} frames had a QR code that couldn't be read (blur, glare, or too small)",
+                    s.qr_located_unread
+                )
+            } else {
+                format!(
+                    "{} frames had no readable stamp (is the whole QR code in shot?)",
+                    s.no_video_stamp
+                )
+            });
+        }
+        Some(format!(
+            "only {} of {} frames could be measured{}",
+            s.measured,
+            s.frames,
+            if reasons.is_empty() {
+                String::new()
+            } else {
+                format!(": {}", reasons.join("; "))
+            }
+        ))
     }
 
     /// A per-frame table.
@@ -314,8 +456,8 @@ impl DriftReport {
             if f.repeated {
                 note.push("repeat".into());
             }
-            if f.stamp_source == Some(StampSource::Qr) {
-                note.push("qr".into());
+            if let Some(source) = f.stamp_source.filter(|s| s.is_qr()) {
+                note.push(source.name().into());
             }
             if camera {
                 let _ = writeln!(
@@ -339,14 +481,11 @@ impl DriftReport {
     /// One CSV row per captured frame.
     pub fn to_csv(&self) -> String {
         let mut out = String::from(
-            "time,video_frame,video_position,stamp_source,audio_frame,drift_ms,dropped_before,repeated,status\n",
+            "time,video_frame,video_position,stamp_source,video_blend,audio_frame,drift_ms,dropped_before,repeated,status\n",
         );
         for f in &self.frames {
             let opt = |v: Option<String>| v.unwrap_or_default();
-            let source = f.stamp_source.map(|s| match s {
-                StampSource::Barcode => "barcode".to_string(),
-                StampSource::Qr => "qr".to_string(),
-            });
+            let source = f.stamp_source.map(|s| s.name().to_string());
             let status = match f.status {
                 FrameStatus::Ok => "ok",
                 FrameStatus::NoVideoStamp => "no_video_stamp",
@@ -354,11 +493,12 @@ impl DriftReport {
             };
             let _ = writeln!(
                 out,
-                "{:.6},{},{},{},{},{},{},{},{}",
+                "{:.6},{},{},{},{},{},{},{},{},{}",
                 f.time,
                 opt(f.video_frame.map(|v| v.to_string())),
                 opt(f.video_position.map(|p| format!("{p:.6}"))),
                 opt(source),
+                opt(f.video_blend.map(|b| format!("{b:.4}"))),
                 opt(f.audio_frame.map(|a| format!("{a:.6}"))),
                 opt(f.drift_ms.map(|d| format!("{d:.6}"))),
                 f.dropped_before,
@@ -390,6 +530,7 @@ mod tests {
             video_frame: Some((time * 30.0).round() as u32),
             video_position: Some((time * 30.0).round()),
             stamp_source: Some(StampSource::Barcode),
+            video_blend: None,
             audio_frame: Some(0.0),
             drift_ms: Some(drift),
             dropped_before: 0,

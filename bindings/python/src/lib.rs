@@ -12,7 +12,7 @@ use av_drift_detector as avd;
 use avd::FrameRate;
 use avd::media::{AudioTrack, MediaScan, VideoSample};
 use avd::pattern::canvas::{LumaImage, LumaView};
-use avd::pattern::{StampSource, decode_frame};
+use avd::pattern::{Blend, FrameStamp, decode_frame};
 use pyo3::buffer::PyBuffer;
 use pyo3::exceptions::{PyException, PyKeyError};
 use pyo3::prelude::*;
@@ -135,18 +135,39 @@ fn generate<'py>(
     Ok(summary)
 }
 
-fn stamp_dict<'py>(py: Python<'py>, s: avd::pattern::FrameStamp) -> PyResult<Bound<'py, PyDict>> {
+fn stamp_dict<'py>(py: Python<'py>, s: FrameStamp) -> PyResult<Bound<'py, PyDict>> {
     let d = PyDict::new(py);
     d.set_item("frame_id", s.frame_id)?;
     d.set_item("fps", s.fps.map(|f| f.to_string()))?;
     d.set_item("tone_base_harmonic", s.tone_base_harmonic)?;
+    d.set_item("source", s.source.name())?;
     d.set_item(
-        "source",
-        match s.source {
-            StampSource::Barcode => "barcode",
-            StampSource::Qr => "qr",
-        },
+        "corners",
+        s.corners
+            .map(|c| c.map(|(x, y)| (f64::from(x), f64::from(y))).to_vec()),
     )?;
+    let blend = s
+        .blend
+        .map(|b| -> PyResult<Bound<'py, PyDict>> {
+            let d = PyDict::new(py);
+            d.set_item("first", b.first)?;
+            d.set_item("weight_next", f64::from(b.weight_next))?;
+            d.set_item("slope", f64::from(b.slope))?;
+            d.set_item("rms", f64::from(b.rms))?;
+            d.set_item("margin", f64::from(b.margin))?;
+            Ok(d)
+        })
+        .transpose()?;
+    d.set_item("blend", blend)?;
+    Ok(d)
+}
+
+/// A frame as `analyze_frames` takes it: `{"time", "stamp", "qr_located"}`.
+fn frame_dict<'py>(py: Python<'py>, v: &VideoSample) -> PyResult<Bound<'py, PyDict>> {
+    let d = PyDict::new(py);
+    d.set_item("time", v.time)?;
+    d.set_item("stamp", v.stamp.map(|s| stamp_dict(py, s)).transpose()?)?;
+    d.set_item("qr_located", v.qr_located)?;
     Ok(d)
 }
 
@@ -165,22 +186,56 @@ fn stamp_from(obj: &Bound<'_, PyAny>) -> PyResult<avd::pattern::FrameStamp> {
         .map(|f| f.extract::<String>().and_then(|f| frame_rate(&f)))
         .transpose()?;
     let source: String = obj.get_item("source")?.extract()?;
-    Ok(avd::pattern::FrameStamp {
+    let corners = optional(obj, "corners")?
+        .map(|c| -> PyResult<[(f32, f32); 4]> {
+            let points: Vec<(f32, f32)> = c.extract()?;
+            points
+                .try_into()
+                .map_err(|_| error("corners must be four (x, y) points"))
+        })
+        .transpose()?;
+    let blend = optional(obj, "blend")?
+        .map(|b| -> PyResult<Blend> {
+            let field = |k: &str| -> PyResult<f32> { b.get_item(k)?.extract() };
+            Ok(Blend {
+                first: b.get_item("first")?.extract()?,
+                weight_next: field("weight_next")?,
+                slope: optional(&b, "slope")?.map_or(Ok(0.0), |v| v.extract())?,
+                rms: optional(&b, "rms")?.map_or(Ok(0.0), |v| v.extract())?,
+                margin: optional(&b, "margin")?.map_or(Ok(f32::INFINITY), |v| v.extract())?,
+            })
+        })
+        .transpose()?;
+    Ok(FrameStamp {
         frame_id: obj.get_item("frame_id")?.extract()?,
         fps,
         tone_base_harmonic: optional(obj, "tone_base_harmonic")?
             .map(|v| v.extract())
             .transpose()?,
-        source: match source.as_str() {
-            "barcode" => StampSource::Barcode,
-            "qr" => StampSource::Qr,
-            other => {
-                return Err(error(format!(
-                    "stamp source must be barcode or qr, not `{other}`"
-                )));
-            }
-        },
+        source: source.parse().map_err(error)?,
+        corners,
+        blend,
     })
+}
+
+/// The bytes of a `width × height` luma plane, checked against its size.
+fn plane(
+    py: Python<'_>,
+    luma: &Bound<'_, PyAny>,
+    width: usize,
+    height: usize,
+    stride: Option<usize>,
+) -> PyResult<Vec<u8>> {
+    let data = PyBuffer::<u8>::get(luma)?.to_vec(py)?;
+    let stride = stride.unwrap_or(width);
+    if width == 0 || height == 0 || stride < width || data.len() < stride * (height - 1) + width {
+        return Err(error(format!(
+            "a {width}×{height} plane with stride {stride} needs {} bytes, got {}",
+            stride * height.saturating_sub(1) + width,
+            data.len()
+        )));
+    }
+    Ok(data)
 }
 
 /// Reads the frame stamp from an 8-bit luma plane (any bytes-like object).
@@ -194,15 +249,8 @@ fn read_frame<'py>(
     stride: Option<usize>,
     try_qr: bool,
 ) -> PyResult<Option<Bound<'py, PyDict>>> {
-    let data = PyBuffer::<u8>::get(luma)?.to_vec(py)?;
+    let data = plane(py, luma, width, height, stride)?;
     let stride = stride.unwrap_or(width);
-    if width == 0 || height == 0 || stride < width || data.len() < stride * (height - 1) + width {
-        return Err(error(format!(
-            "a {width}×{height} plane with stride {stride} needs {} bytes, got {}",
-            stride * height.saturating_sub(1) + width,
-            data.len()
-        )));
-    }
     let stamp = py.detach(|| decode_frame(&LumaView::new(&data, width, height, stride), try_qr));
     stamp.map(|s| stamp_dict(py, s)).transpose()
 }
@@ -232,6 +280,8 @@ fn analyze_frames(
             stamp: optional(&frame, "stamp")?
                 .map(|s| stamp_from(&s))
                 .transpose()?,
+            qr_located: optional(&frame, "qr_located")?.map_or(Ok(false), |v| v.extract())?,
+            old_format: false,
         });
     }
     let audio = audio
@@ -253,6 +303,52 @@ fn analyze_frames(
     let options = analyze_options(offset, duration, fps, true, capture)?;
     let report = py.detach(|| avd::analyze::analyze_scan(&scan, &options, "frames".into()));
     report_json(&report.map_err(error)?)
+}
+
+/// Reads the stamps of consecutive frames of one capture, remembering where
+/// the QR code was (faster, and it reads codes blended between two frames).
+#[pyclass(module = "av_drift_detector")]
+struct StampReader {
+    inner: avd::pattern::StampReader,
+    frames: Vec<VideoSample>,
+}
+
+#[pymethods]
+impl StampReader {
+    #[new]
+    #[pyo3(signature = (*, try_qr=true))]
+    fn new(try_qr: bool) -> Self {
+        StampReader {
+            inner: avd::pattern::StampReader::new(try_qr),
+            frames: Vec::new(),
+        }
+    }
+
+    /// Reads the next frame, an 8-bit luma plane shown at `time` seconds.
+    #[pyo3(signature = (luma, width, height, time, stride=None))]
+    fn read<'py>(
+        &mut self,
+        py: Python<'py>,
+        luma: &Bound<'py, PyAny>,
+        width: usize,
+        height: usize,
+        time: f64,
+        stride: Option<usize>,
+    ) -> PyResult<Bound<'py, PyDict>> {
+        let data = plane(py, luma, width, height, stride)?;
+        let stride = stride.unwrap_or(width);
+        let inner = &mut self.inner;
+        let sample = py.detach(|| inner.read(&LumaView::new(&data, width, height, stride), time));
+        self.frames.push(sample);
+        frame_dict(py, &sample)
+    }
+
+    /// Every frame read so far, with any the reader could identify only
+    /// after seeing later frames filled in: pass these to `analyze_frames`.
+    fn finish<'py>(&mut self, py: Python<'py>) -> PyResult<Vec<Bound<'py, PyDict>>> {
+        self.inner.finish(&mut self.frames);
+        self.frames.iter().map(|v| frame_dict(py, v)).collect()
+    }
 }
 
 /// Renders test-pattern frames as 8-bit luma planes, without FFmpeg.
@@ -354,5 +450,6 @@ fn native(m: &Bound<'_, PyModule>) -> PyResult<()> {
     m.add_function(wrap_pyfunction!(analyze_frames, m)?)?;
     m.add_function(wrap_pyfunction!(synthesize_audio, m)?)?;
     m.add_class::<PatternRenderer>()?;
+    m.add_class::<StampReader>()?;
     Ok(())
 }

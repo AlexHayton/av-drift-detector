@@ -1,5 +1,7 @@
-//! A small 7-pixel-high bitmap font for the info line: digits, `×`, `·`, `.`,
-//! `:`, `f`, `p`, `s` and space. Each font pixel is drawn as a `scale`×`scale` square.
+//! A small 7-pixel-high bitmap font for the info line and the project's link:
+//! digits, the lower-case letters, `A` and `H`, `×`, `·`, `.`, `:`, `/`, `-`
+//! and space. Lower-case letters sit on a five-pixel x-height; descenders are
+//! tucked in (`g`, `p`, `y`). Each font pixel is drawn as a `scale`×`scale` square.
 
 use super::canvas::{LumaCanvas, Rect};
 
@@ -76,9 +78,51 @@ fn glyph(ch: char) -> Option<Glyph> {
         '·' => (3, [0, 0, 0, 0b010, 0, 0, 0]),
         '.' => (2, [0, 0, 0, 0, 0, 0b11, 0b11]),
         ':' => (2, [0, 0b11, 0b11, 0, 0b11, 0b11, 0]),
+        '/' => (
+            5,
+            [
+                0b00001, 0b00010, 0b00010, 0b00100, 0b01000, 0b01000, 0b10000,
+            ],
+        ),
+        '-' => (4, [0, 0, 0, 0, 0b1111, 0, 0]),
+        'A' => (
+            5,
+            [
+                0b01110, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001,
+            ],
+        ),
+        'H' => (
+            5,
+            [
+                0b10001, 0b10001, 0b10001, 0b11111, 0b10001, 0b10001, 0b10001,
+            ],
+        ),
+        'a' => (4, [0, 0, 0b0110, 0b0001, 0b0111, 0b1001, 0b0111]),
+        'b' => (4, [0b1000, 0b1000, 0b1110, 0b1001, 0b1001, 0b1001, 0b1110]),
+        'c' => (4, [0, 0, 0b0111, 0b1000, 0b1000, 0b1000, 0b0111]),
+        'd' => (4, [0b0001, 0b0001, 0b0111, 0b1001, 0b1001, 0b1001, 0b0111]),
+        'e' => (4, [0, 0, 0b0110, 0b1001, 0b1111, 0b1000, 0b0111]),
         'f' => (4, [0b0011, 0b0100, 0b1111, 0b0100, 0b0100, 0b0100, 0b0100]),
+        'g' => (4, [0, 0, 0b0111, 0b1001, 0b0111, 0b0001, 0b0110]),
+        'h' => (4, [0b1000, 0b1000, 0b1110, 0b1001, 0b1001, 0b1001, 0b1001]),
+        'i' => (3, [0b010, 0, 0b110, 0b010, 0b010, 0b010, 0b111]),
+        'j' => (3, [0b001, 0, 0b011, 0b001, 0b001, 0b101, 0b010]),
+        'k' => (4, [0b1000, 0b1000, 0b1001, 0b1010, 0b1100, 0b1010, 0b1001]),
+        'l' => (3, [0b110, 0b010, 0b010, 0b010, 0b010, 0b010, 0b111]),
+        'm' => (5, [0, 0, 0b11010, 0b10101, 0b10101, 0b10101, 0b10101]),
+        'n' => (4, [0, 0, 0b1110, 0b1001, 0b1001, 0b1001, 0b1001]),
+        'o' => (4, [0, 0, 0b0110, 0b1001, 0b1001, 0b1001, 0b0110]),
         'p' => (4, [0, 0, 0b1110, 0b1001, 0b1110, 0b1000, 0b1000]),
+        'q' => (4, [0, 0, 0b0111, 0b1001, 0b0111, 0b0001, 0b0001]),
+        'r' => (4, [0, 0, 0b1011, 0b1100, 0b1000, 0b1000, 0b1000]),
         's' => (4, [0, 0, 0b0111, 0b1000, 0b0110, 0b0001, 0b1110]),
+        't' => (4, [0b0100, 0b0100, 0b1111, 0b0100, 0b0100, 0b0100, 0b0011]),
+        'u' => (4, [0, 0, 0b1001, 0b1001, 0b1001, 0b1001, 0b0111]),
+        'v' => (5, [0, 0, 0b10001, 0b10001, 0b10001, 0b01010, 0b00100]),
+        'w' => (5, [0, 0, 0b10001, 0b10001, 0b10101, 0b10101, 0b01010]),
+        'x' => (5, [0, 0, 0b10001, 0b01010, 0b00100, 0b01010, 0b10001]),
+        'y' => (4, [0, 0, 0b1001, 0b1001, 0b0111, 0b0001, 0b0110]),
+        'z' => (4, [0, 0, 0b1111, 0b0010, 0b0100, 0b1000, 0b1111]),
         ' ' => (3, [0; ROWS as usize]),
         _ => return None,
     })
@@ -129,7 +173,19 @@ mod tests {
         assert_eq!(text_width("1", 1), 5);
         assert_eq!(text_width("1.5", 2), (5 + 1 + 2 + 1 + 5) * 2);
         assert!(supports("1920×1080 · 29.97 fps · 1:00:00.5"));
-        assert!(!supports("1920x1080"));
+        assert!(supports("github.com/AlexHayton/av-drift-detector"));
+        assert!(supports("abcdefghijklmnopqrstuvwxyz"));
+        assert!(!supports("1920X1080"));
+    }
+
+    #[test]
+    fn glyphs_fit_their_widths() {
+        for ch in "0123456789AHabcdefghijklmnopqrstuvwxyz×·.:/- ".chars() {
+            let (width, rows) = glyph(ch).unwrap();
+            for bits in rows {
+                assert_eq!(bits >> width, 0, "{ch:?} has pixels beyond its width");
+            }
+        }
     }
 
     #[test]

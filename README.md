@@ -3,7 +3,7 @@
 [![crates.io](https://img.shields.io/crates/v/av-drift-detector.svg)](https://crates.io/crates/av-drift-detector)
 [![docs.rs](https://docs.rs/av-drift-detector/badge.svg)](https://docs.rs/av-drift-detector)
 [![CI](https://github.com/AlexHayton/av-drift-detector/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/AlexHayton/av-drift-detector/actions/workflows/ci.yml?query=branch%3Amain)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License: BSD-2-Clause-Patent](https://img.shields.io/badge/license-BSD--2--Clause--Patent-blue.svg)](LICENSE)
 
 **Measure audio/video sync to a fraction of a millisecond, frame by frame.**
 
@@ -28,7 +28,7 @@ Drift    mean +78.50 ms  median +78.50 ms  min +78.50 ms  max +78.50 ms  stddev 
          = +2.35 frames at 29.97 fps (positive = audio late)
 Skew     +0.000 ms/min (+0.0 ppm)
 Frames   297 measured, 0 unreadable, 3 without audio, 0 dropped, 0 repeated
-Audio    297 frame cells decoded
+Audio    297 frame cells decoded; tones at -22 dBFS, 67 dB above the noise
 ```
 
 ## Why
@@ -38,18 +38,19 @@ Classic sync tests ("flash and beep", the 2-pop) tell you the offset once, to th
 `av-drift-detector` makes both sides self-identifying:
 
 - **Video**: each frame shows its number as a 48-bit barcode with a CRC (for digital copies), a QR code (found anywhere in a camera image), and a human-readable timecode.
-- **Audio**: each frame's worth of sound is four simultaneous tones that encode the frame number (mod 65536). Any 33 ms snippet says which frame it belongs to, and its tone phases pin the timing down to a fraction of a sample.
+- **Audio**: each frame's worth of sound is four simultaneous tones that encode the frame number (mod 65536), and every one of them changes on every frame. Any 33 ms snippet says which frame it belongs to, and its tone phases pin the timing down to a fraction of a sample.
 
 So any frame, plus the audio around it, gives the exact drift. Measuring every frame shows how drift changes over time: jitter, clock skew, dropped frames.
 
 ## Features
 
 - **Sub-millisecond precision.** Matches to within 0.05 ms on lossless files and 0.5 ms through H.264 + AAC. Through a simulated echoey room and a camera at an unrelated frame rate, it measures within about 0.1 ms.
+- **Robust to rough captures.** Digital copies read exactly when rotated, keystoned, blurred, noisy, glared, shrunk or shown small inside a bigger picture. Audio reads 60 dB below the generated level, through small speakers, notches, harsh echo and noise suppression, and at 16 kb/s Opus. `scripts/stress.py` checks all of this against known answers.
 - **Any frame rate.** 23.976 to 120 fps and custom rates, kept as exact fractions (29.97 is `30000/1001`), with drop-frame timecode.
-- **Self-describing files.** The barcode carries the frame rate, and the QR code carries the frame rate and audio tone plan, so analysis needs no settings. Scanned with any phone camera, the QR code opens this project's page.
-- **Camera mode.** Point a phone at a screen. The analyzer finds the QR code at any angle, and recovers the display's frame timing from many camera frames. It also tolerates room echo, noise, quiet recordings and inverted microphone polarity.
+- **Self-describing files.** The barcode carries the frame rate, and the QR code carries the frame rate, audio tone plan and frame size, so analysis needs no settings. Scanned with any phone camera, the QR code opens this project's page.
+- **Camera mode.** Point a phone at a screen, at any frame rate. The analyzer finds the QR code at any angle and follows it from frame to frame. It reads pictures the camera caught while the screen was switching frames, and uses how far through the switch each was to recover the display's timing to a millisecond or two, and the camera's exposure time. It also tolerates room echo, noise, quiet recordings and inverted microphone polarity.
 - **Per-frame reports.** Mean, median, range, jitter and clock skew (ms/min and ppm), plus dropped and repeated frames. Output as text, JSON or CSV, with a `--max-drift` exit code for CI.
-- **Something to watch and listen to.** A stick figure in a top hat dances a physics-driven routine on the frame, and an oom-pah tune plays under the tones. The tune only uses frequencies the decoder ignores, so it doesn't affect the measurement, and the smooth motion makes judder and dropped frames easy to spot by eye. An info line shows the frame size, rate and length. Portrait, square and landscape frames each get their own layout.
+- **Something to watch and listen to.** A stick figure in a top hat dances a physics-driven routine on the frame, and an oom-pah tune plays under the tones. The tune only uses frequencies the decoder ignores, so it doesn't affect the measurement, and the smooth motion makes judder and dropped frames easy to spot by eye. An info line shows the frame size, rate and length, and a small line along the bottom says where the project lives. Portrait, square and landscape frames each get their own layout.
 - **Library and CLI.** The pattern renderer, the audio coder/decoder and the analysis are plain Rust. Only file I/O uses [`ffmpeg-next`](https://crates.io/crates/ffmpeg-next), behind the default `ffmpeg` feature.
 
 ## Install
@@ -87,15 +88,16 @@ av-drift analyze pipeline-output.mkv
 
 ```sh
 av-drift generate --fps 30 --duration 60 -o tv-test.mp4
-# Play tv-test.mp4 full screen. Film the screen with a phone at 25 or 24 fps
-# (not 30 or 60; see the camera guide), keeping the QR code in shot.
+# Play tv-test.mp4 full screen. Film the screen with a phone, keeping the QR
+# code in shot; 25 or 24 fps is best (see the camera guide), but any rate works.
 av-drift analyze phone-video.mov
 ```
 
 ```text
-Pattern  30 fps (from qr), 1920x1080
-Capture  camera; display timing known to ±0.60 ms
-Drift    mean +40.03 ms  median +40.03 ms  min +39.99 ms  max +40.10 ms  stddev 0.02 ms
+Pattern  30 fps (from qr), 1280x720
+Capture  camera; display timing from 237 frames caught mid-switch, known to ±1.99 ms
+         (exposure measured at 33.2 ms)
+Drift    mean +40.09 ms  median +40.09 ms  min +39.83 ms  max +40.30 ms  stddev 0.07 ms
 ```
 
 See the [camera guide](docs/camera.md) for tips on getting good measurements.
@@ -135,14 +137,14 @@ See [Using the library](docs/library.md) and the [API docs](https://docs.rs/av-d
   <img src="docs/media/anatomy.svg" width="800" alt="Anatomy of a test-pattern frame: barcode strip, timecode, frame number, frame-in-second ticks, info line, the dancer's stage, QR code">
 </p>
 
-Each frame's audio plays four tones, one from each of four bands of 16 frequencies. Each tone carries one hex digit of the frame number. Every frequency is a whole multiple of the frame rate, so each tone completes a whole number of cycles per frame: the waveform has no clicks, and a window aligned to a frame sees each tone exactly on a DFT bin. The tune underneath is made the same way, from lower harmonics that change only between frames, so that window doesn't see it at all.
+Each frame's audio plays four tones, one from each of four bands of 16 frequencies. Each tone carries one hex digit of the frame number, and the higher bands hop to a new tone on every frame, so that nothing holds still long enough for a noise suppressor to remove it. Every frequency is a whole multiple of the frame rate, so each tone completes a whole number of cycles per frame: the waveform has no clicks, and a window aligned to a frame sees each tone exactly on a DFT bin. The tune underneath is made the same way, from lower harmonics that change only between frames, so that window doesn't see it at all.
 
 <p align="center">
-  <img src="docs/media/spectrogram.png" width="800" alt="Spectrogram of one second of test audio: the lowest band steps up every frame, the next every 16 frames, the top two hold steady">
+  <img src="docs/media/spectrogram.png" width="800" alt="Spectrogram of one second of test audio: the lowest band steps up every frame, and the three above it hop to a new tone every frame">
 </p>
 
 The analyzer:
-1. reads each frame's number;
+1. reads each frame's number, including pictures a camera caught between two frames, and how far between;
 2. finds the boundaries of the audio's frames with a purity search, then a matched filter that ignores echoes;
 3. measures each tone's phase to get the audio's exact source position;
 4. reports the difference at every video frame.
@@ -162,4 +164,4 @@ Details are in [How it works](docs/how-it-works.md) and the [test pattern specif
 
 ## License
 
-[MIT](LICENSE)
+Copyright 2026 The av-drift-detector authors. Licensed under the [BSD-2-Clause Plus Patent License](LICENSE) (`BSD-2-Clause-Patent`). The music is dedicated to the public domain ([CC0](https://creativecommons.org/publicdomain/zero/1.0/)).

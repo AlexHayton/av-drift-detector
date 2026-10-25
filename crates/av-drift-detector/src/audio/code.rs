@@ -1,9 +1,18 @@
 //! The 16-bit audio frame code.
 //!
 //! During frame `N`, the audio plays four simultaneous tones. Band `b` carries
-//! nibble `b` of `N mod 65536`, as one of 16 frequencies. Every frequency is a
-//! whole multiple of the frame rate (`f = k·fps`), so each tone completes a
-//! whole number of cycles per frame. That has three consequences:
+//! nibble `b` of `N mod 65536`, as one of 16 frequencies. Band 0 plays its
+//! nibble's tone directly; the higher bands *hop*: band `b` plays tone
+//! `(nibble_b + K_b·nibble_0) mod 16`, with odd `K_b` (5, 7, 11). Every band
+//! therefore changes tone on every frame and visits all 16 tones every 16
+//! frames. Nothing holds still long enough for a noise suppressor (a video
+//! call's, a phone's speech enhancement) to learn it as background and remove
+//! it, and a dip in a speaker's or room's response at one frequency costs each
+//! band one frame in 16, not seconds at a time.
+//!
+//! Every frequency is a whole multiple of the frame rate (`f = k·fps`), so
+//! each tone completes a whole number of cycles per frame. That has three
+//! consequences:
 //!
 //! * a window aligned to a frame sees each tone exactly on an orthogonal DFT bin
 //!   (no leakage between neighbouring frequencies);
@@ -28,6 +37,9 @@ pub const MIN_FREQUENCY_HZ: f64 = 600.0;
 pub const TONE_AMPLITUDE: f64 = 0.08;
 /// Audio frame ids wrap at this value.
 pub const ID_MODULUS: u32 = 1 << 16;
+/// How far each band's tone hops per step of the low nibble (band 0 doesn't).
+/// Odd, so that every band changes tone on every frame, carries included.
+pub const HOPS: [usize; BANDS] = [0, 5, 7, 11];
 
 /// The tone plan for one frame rate and sample rate.
 #[derive(Clone, Debug, PartialEq)]
@@ -82,22 +94,17 @@ impl ToneCode {
         self.base_harmonic
     }
 
-    /// Compact description of the plan for the QR code, e.g. `T4X16G2K21`:
-    /// tones, 4 bands × 16 tones, 2-harmonic gaps, base harmonic 21.
+    /// Compact description of the plan for the QR code, e.g. `K21`: base
+    /// harmonic 21. (4 bands × 16 hopping tones with 2-harmonic gaps is the
+    /// only layout.)
     pub fn descriptor(&self) -> String {
-        format!(
-            "T{BANDS}X{TONES_PER_BAND}G{BAND_GAP}K{}",
-            self.base_harmonic
-        )
+        format!("K{}", self.base_harmonic)
     }
 
     /// Parses a [`descriptor`](Self::descriptor), returning the base harmonic.
-    /// Fails for plans this version can't decode.
     pub fn parse_descriptor(text: &str) -> Result<u32> {
         let unsupported = || Error::Unsupported(format!("audio code `{text}`"));
-        let k = text
-            .strip_prefix(&format!("T{BANDS}X{TONES_PER_BAND}G{BAND_GAP}K"))
-            .ok_or_else(unsupported)?;
+        let k = text.strip_prefix('K').ok_or_else(unsupported)?;
         k.parse().ok().filter(|&k| k > 0).ok_or_else(unsupported)
     }
 
@@ -131,6 +138,41 @@ impl ToneCode {
             .fold(0, |id, (b, &n)| id | ((n as u16 & 0xF) << (4 * b)))
     }
 
+    /// Which of its 16 tones `band` plays for frame id `id`.
+    pub fn tone(band: usize, id: u16) -> usize {
+        let nibbles = Self::nibbles(id);
+        (nibbles[band] + HOPS[band] * nibbles[0]) % TONES_PER_BAND
+    }
+
+    /// The nibble of `band` that tone `tone` stands for, given the low nibble
+    /// (band 0's, which every cell carries in the clear).
+    pub fn nibble(band: usize, tone: usize, low: usize) -> usize {
+        (tone + TONES_PER_BAND * TONES_PER_BAND - HOPS[band] * low % TONES_PER_BAND)
+            % TONES_PER_BAND
+    }
+
+    /// The tones of all four bands for `id`.
+    pub fn tones(id: u16) -> [usize; BANDS] {
+        std::array::from_fn(|b| Self::tone(b, id))
+    }
+
+    /// The id carried by a full set of tones.
+    pub fn id_from_tones(tones: [usize; BANDS]) -> u16 {
+        let low = tones[0];
+        Self::id_from_nibbles(std::array::from_fn(|b| Self::nibble(b, tones[b], low)))
+    }
+
+    /// The unused harmonics between the bands, where no tone (or music) ever
+    /// plays: their energy in a frame-aligned window measures the noise.
+    pub fn guard_harmonics(&self) -> Vec<u32> {
+        (0..BANDS - 1)
+            .flat_map(|b| {
+                let top = self.harmonic(b, TONES_PER_BAND - 1);
+                (1..=BAND_GAP as u32).map(move |g| top + g)
+            })
+            .collect()
+    }
+
     /// The test signal at source time `t` seconds (silence before zero).
     pub fn signal_at(&self, t: f64) -> f64 {
         (0..BANDS)
@@ -150,7 +192,7 @@ impl ToneCode {
         // Phase within the frame: tone `k` is sin(2π·k·frac), i.e. sin(2π·f·t).
         let frac = position - frame;
         let id = (frame as u64 % u64::from(ID_MODULUS)) as u16;
-        let k = f64::from(self.harmonic(band, Self::nibbles(id)[band]));
+        let k = f64::from(self.harmonic(band, Self::tone(band, id)));
         Some(std::f64::consts::TAU * k * frac)
     }
 }
@@ -168,6 +210,28 @@ mod tests {
     }
 
     #[test]
+    fn tones_hop_every_frame_and_decode() {
+        for id in 0..=u16::MAX {
+            let tones = ToneCode::tones(id);
+            assert_eq!(ToneCode::id_from_tones(tones), id, "id {id}");
+            if id > 0 {
+                let before = ToneCode::tones(id - 1);
+                for b in 0..BANDS {
+                    assert_ne!(tones[b], before[b], "band {b} held from {} to {id}", id - 1);
+                }
+            }
+        }
+        // Each band visits all 16 tones in any 16 consecutive frames.
+        for b in 0..BANDS {
+            let mut seen = [false; TONES_PER_BAND];
+            for id in 0x1230..0x1240u16 {
+                seen[ToneCode::tone(b, id)] = true;
+            }
+            assert!(seen.iter().all(|&s| s), "band {b}");
+        }
+    }
+
+    #[test]
     fn frequency_plan() {
         let code = ToneCode::new("30".parse().unwrap(), 48000).unwrap();
         assert_eq!(code.frequency(0, 0), 600.0);
@@ -182,10 +246,11 @@ mod tests {
     #[test]
     fn descriptor_roundtrip() {
         let code = ToneCode::new("29.97".parse().unwrap(), 48000).unwrap();
-        assert_eq!(code.descriptor(), "T4X16G2K21");
-        assert_eq!(ToneCode::parse_descriptor("T4X16G2K21").unwrap(), 21);
-        assert!(ToneCode::parse_descriptor("T4X8G2K21").is_err());
-        assert!(ToneCode::parse_descriptor("T4X16G2K0").is_err());
+        assert_eq!(code.descriptor(), "K21");
+        assert_eq!(ToneCode::parse_descriptor("K21").unwrap(), 21);
+        assert!(ToneCode::parse_descriptor("T4X16G2K21").is_err());
+        assert!(ToneCode::parse_descriptor("K0").is_err());
+        assert!(ToneCode::parse_descriptor("K").is_err());
     }
 
     #[test]

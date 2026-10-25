@@ -26,6 +26,15 @@ class PatternRenderer:
     def render(self, frame_id: int) -> bytes:
         """Frame ``frame_id`` as ``width × height`` bytes of luma (16 = black, 235 = white)."""
 
+class StampReader:
+    """Reads the stamps of consecutive frames of one capture."""
+
+    def __init__(self, *, try_qr: bool = True) -> None: ...
+    def read(
+        self, luma: Buffer, width: int, height: int, time: float, stride: int | None = None
+    ) -> Any: ...
+    def finish(self) -> list[Any]: ...
+
 def analyze(
     path: str,
     *,

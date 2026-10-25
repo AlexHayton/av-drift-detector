@@ -21,12 +21,17 @@ use crate::pattern::FrameStamp;
 use crate::{Error, FrameRate, Result};
 
 /// One decoded video frame.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Default)]
 pub struct VideoSample {
     /// Presentation time in seconds (container timeline).
     pub time: f64,
     /// The stamp read from the frame, if any.
     pub stamp: Option<FrameStamp>,
+    /// Whether a QR code was found in the frame, even if it couldn't be read.
+    pub qr_located: bool,
+    /// Whether the frame carries a stamp in an earlier release's format,
+    /// which isn't read.
+    pub old_format: bool,
 }
 
 /// Decoded audio, downmixed to mono.

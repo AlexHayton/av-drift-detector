@@ -120,8 +120,11 @@ class RepositoryTests(unittest.TestCase):
         for path, text in FIXTURE.items():
             self.write(path, text)
         self.git("init", "--quiet", "--initial-branch", "main")
+        # Without the last two, each commit starts background maintenance, which
+        # can delete its lock file while the cleanup is removing the repository.
         for key, value in [("user.name", "Test"), ("user.email", "test@example.com"),
-                           ("commit.gpgsign", "false"), ("tag.gpgsign", "false")]:
+                           ("commit.gpgsign", "false"), ("tag.gpgsign", "false"),
+                           ("maintenance.auto", "false"), ("gc.auto", "0")]:
             self.git("config", key, value)
         self.git("add", "--all")
         self.git("commit", "--quiet", "-m", "Initial")
