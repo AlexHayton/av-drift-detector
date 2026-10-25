@@ -14,7 +14,7 @@ test = false
 doctest = false
 
 [dependencies]
-av-drift-detector = { path = "../../crates/av-drift-detector", version = "0.3.0", default-features = false, features = ["ffmpeg-cli", "qr-decode"] }
+av-drift-detector = { path = "../../crates/av-drift-detector", version = "0.4.0", default-features = false, features = ["ffmpeg-cli", "qr-decode"] }
 napi = { version = "3.14", features = ["napi6"] }
 napi-derive = "3.6"
 
