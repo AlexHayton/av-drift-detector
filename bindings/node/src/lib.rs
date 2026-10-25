@@ -41,8 +41,11 @@ pub struct FrameDrift {
     pub video_frame: Option<u32>,
     /// Source video position at `time`, in (fractional) frames.
     pub video_position: Option<f64>,
-    #[napi(ts_type = "'barcode' | 'qr'")]
+    #[napi(ts_type = "'barcode' | 'barcode_blend' | 'qr' | 'qr_blend'")]
     pub stamp_source: Option<String>,
+    /// How far the picture had switched to the next frame (0 to 1), where it
+    /// showed a blend of two frames.
+    pub video_blend: Option<f64>,
     /// Source position of the audio playing at `time`, in (fractional) frames.
     pub audio_frame: Option<f64>,
     /// Video minus audio, in milliseconds: positive means the audio is late.
@@ -76,6 +79,25 @@ pub struct DriftSummary {
     pub no_audio: u32,
     pub audio_cells: u32,
     pub audio_outliers: u32,
+    /// Median level of each decoded audio cell's weakest tone, in dBFS.
+    pub audio_level_dbfs: Option<f64>,
+    /// Median height of each cell's weakest tone above the noise, in dB.
+    pub audio_snr_db: Option<f64>,
+    /// Frames where a QR code was found but couldn't be read.
+    pub qr_located_unread: u32,
+    /// Frames read by fitting the QR code against rendered frames' codes.
+    pub qr_blend_frames: u32,
+    /// Frames that caught the display switching between two frames.
+    pub mixed_frames: u32,
+}
+
+/// What a capture would measure if it were the other kind (`DriftReport.alternative`).
+#[napi(object)]
+pub struct AlternativeReading {
+    #[napi(ts_type = "'file' | 'camera'")]
+    pub capture: String,
+    pub mean_ms: f64,
+    pub video_timing_uncertainty_ms: Option<f64>,
 }
 
 /// The result of analysing a capture: the same content as `av-drift analyze --json`.
@@ -92,6 +114,18 @@ pub struct DriftReport {
     pub capture: String,
     /// Camera captures: ± how well the display's frame timing is known.
     pub video_timing_uncertainty_ms: Option<f64>,
+    /// Camera captures: how the display's timeline was found.
+    #[napi(ts_type = "'blend' | 'bounds'")]
+    pub video_timing: Option<String>,
+    /// The camera's exposure time, where the capture let it be measured.
+    pub exposure_ms: Option<f64>,
+    /// The longest exposure allowed for, where it couldn't be measured.
+    pub max_exposure_ms: Option<f64>,
+    /// Frames the display showed noticeably early or late.
+    pub display_judder: u32,
+    /// When the stamps fit both a digital copy and a camera locked to the
+    /// pattern's rate: what the other reading would say.
+    pub alternative: Option<AlternativeReading>,
     pub width: u32,
     pub height: u32,
     pub offset: f64,
@@ -101,11 +135,7 @@ pub struct DriftReport {
 }
 
 fn source_name(source: StampSource) -> String {
-    match source {
-        StampSource::Barcode => "barcode",
-        StampSource::Qr => "qr",
-    }
-    .into()
+    source.name().into()
 }
 
 fn capture_name(capture: CaptureMode) -> String {
@@ -131,6 +161,15 @@ impl From<avd::DriftReport> for DriftReport {
             fps_source: r.fps_source.into(),
             capture: capture_name(r.capture),
             video_timing_uncertainty_ms: r.video_timing_uncertainty_ms,
+            video_timing: r.video_timing.map(Into::into),
+            exposure_ms: r.exposure_ms,
+            max_exposure_ms: r.max_exposure_ms,
+            display_judder: count(r.display_judder),
+            alternative: r.alternative.map(|a| AlternativeReading {
+                capture: capture_name(a.capture),
+                mean_ms: a.mean_ms,
+                video_timing_uncertainty_ms: a.video_timing_uncertainty_ms,
+            }),
             width: r.width,
             height: r.height,
             offset: r.offset,
@@ -152,6 +191,11 @@ impl From<avd::DriftReport> for DriftReport {
                 no_audio: count(s.no_audio),
                 audio_cells: count(s.audio_cells),
                 audio_outliers: count(s.audio_outliers),
+                audio_level_dbfs: s.audio_level_dbfs,
+                audio_snr_db: s.audio_snr_db,
+                qr_located_unread: count(s.qr_located_unread),
+                qr_blend_frames: count(s.qr_blend_frames),
+                mixed_frames: count(s.mixed_frames),
             },
             frames: r
                 .frames
@@ -161,6 +205,7 @@ impl From<avd::DriftReport> for DriftReport {
                     video_frame: f.video_frame,
                     video_position: f.video_position,
                     stamp_source: f.stamp_source.map(source_name),
+                    video_blend: f.video_blend.map(f64::from),
                     audio_frame: f.audio_frame,
                     drift_ms: f.drift_ms,
                     dropped_before: f.dropped_before,
@@ -388,6 +433,21 @@ impl GenerateOptions {
 
 // -------------------------------------------- frames and audio in memory --
 
+/// A picture read as a mix of two consecutive frames.
+#[napi(object)]
+pub struct Blend {
+    /// The earlier frame: the picture mixes `first` and `first + 1`.
+    pub first: u32,
+    /// The weight of `first + 1` (0 to 1): the share of the exposure after the switch.
+    pub weight_next: f64,
+    /// How much the weight grows from the code's top row to its bottom row.
+    pub slope: f64,
+    /// Root-mean-square error of the fit (black 0, white 1).
+    pub rms: f64,
+    /// The error of the best fit naming another frame, over `rms`.
+    pub margin: f64,
+}
+
 /// A frame number read from a picture.
 #[napi(object)]
 pub struct FrameStamp {
@@ -396,8 +456,13 @@ pub struct FrameStamp {
     pub fps: Option<String>,
     /// The audio tone plan's base harmonic (QR codes only).
     pub tone_base_harmonic: Option<u32>,
-    #[napi(ts_type = "'barcode' | 'qr'")]
+    #[napi(ts_type = "'barcode' | 'barcode_blend' | 'qr' | 'qr_blend'")]
     pub source: String,
+    /// The QR code's corners in frame pixels (top left, top right, bottom
+    /// right, bottom left, as printed): `[x, y]` pairs.
+    pub corners: Option<Vec<Vec<f64>>>,
+    /// How the picture mixed two consecutive frames, where measured.
+    pub blend: Option<Blend>,
 }
 
 impl From<avd::pattern::FrameStamp> for FrameStamp {
@@ -407,6 +472,18 @@ impl From<avd::pattern::FrameStamp> for FrameStamp {
             fps: s.fps.map(|f| f.to_string()),
             tone_base_harmonic: s.tone_base_harmonic,
             source: source_name(s.source),
+            corners: s.corners.map(|c| {
+                c.iter()
+                    .map(|&(x, y)| vec![f64::from(x), f64::from(y)])
+                    .collect()
+            }),
+            blend: s.blend.map(|b| Blend {
+                first: b.first,
+                weight_next: f64::from(b.weight_next),
+                slope: f64::from(b.slope),
+                rms: f64::from(b.rms),
+                margin: f64::from(b.margin),
+            }),
         }
     }
 }
@@ -422,15 +499,30 @@ impl FrameStamp {
                 .transpose()
                 .map_err(reason)?,
             tone_base_harmonic: self.tone_base_harmonic,
-            source: match self.source.as_str() {
-                "barcode" => StampSource::Barcode,
-                "qr" => StampSource::Qr,
-                other => {
-                    return Err(reason(format!(
-                        "stamp source must be barcode or qr, not `{other}`"
-                    )));
-                }
-            },
+            source: self.source.parse().map_err(reason)?,
+            corners: self
+                .corners
+                .as_ref()
+                .map(|c| -> Result<[(f32, f32); 4]> {
+                    let points: Vec<(f32, f32)> = c
+                        .iter()
+                        .map(|p| match p.as_slice() {
+                            [x, y] => Ok((*x as f32, *y as f32)),
+                            _ => Err(reason("each corner must be an [x, y] pair")),
+                        })
+                        .collect::<Result<_>>()?;
+                    points
+                        .try_into()
+                        .map_err(|_| reason("corners must be four [x, y] points"))
+                })
+                .transpose()?,
+            blend: self.blend.as_ref().map(|b| avd::pattern::Blend {
+                first: b.first,
+                weight_next: b.weight_next as f32,
+                slope: b.slope as f32,
+                rms: b.rms as f32,
+                margin: b.margin as f32,
+            }),
         })
     }
 }
@@ -445,6 +537,12 @@ pub fn read_frame(
     stride: Option<u32>,
     try_qr: Option<bool>,
 ) -> Result<Option<FrameStamp>> {
+    let view = plane(&luma, width, height, stride)?;
+    Ok(decode_frame(&view, try_qr.unwrap_or(true)).map(Into::into))
+}
+
+/// A `width × height` luma plane, checked against its size.
+fn plane(luma: &[u8], width: u32, height: u32, stride: Option<u32>) -> Result<LumaView<'_>> {
     let (w, h) = (width as usize, height as usize);
     let stride = stride.map_or(w, |s| s as usize);
     if w == 0 || h == 0 || stride < w || luma.len() < stride * (h - 1) + w {
@@ -454,8 +552,7 @@ pub fn read_frame(
             luma.len()
         )));
     }
-    let view = LumaView::new(&luma, w, h, stride);
-    Ok(decode_frame(&view, try_qr.unwrap_or(true)).map(Into::into))
+    Ok(LumaView::new(luma, w, h, stride))
 }
 
 /// One captured video frame: when it was shown, and its stamp (if readable).
@@ -464,6 +561,63 @@ pub struct CapturedFrame {
     /// Seconds, on the same clock as the audio's `startTime`.
     pub time: f64,
     pub stamp: Option<FrameStamp>,
+    /// Whether a QR code was found, even if it couldn't be read.
+    pub qr_located: Option<bool>,
+}
+
+impl From<&VideoSample> for CapturedFrame {
+    fn from(v: &VideoSample) -> Self {
+        CapturedFrame {
+            time: v.time,
+            stamp: v.stamp.map(Into::into),
+            qr_located: Some(v.qr_located),
+        }
+    }
+}
+
+/// Reads the stamps of consecutive frames of one capture. It remembers where
+/// the QR code was, which is faster, and reads codes caught between two
+/// frames that `readFrame` can't.
+#[napi]
+pub struct StampReader {
+    inner: avd::pattern::StampReader,
+    frames: Vec<VideoSample>,
+}
+
+#[napi]
+impl StampReader {
+    /// A reader that falls back to the QR code unless `tryQr` is false.
+    #[napi(constructor)]
+    pub fn new(try_qr: Option<bool>) -> Self {
+        StampReader {
+            inner: avd::pattern::StampReader::new(try_qr.unwrap_or(true)),
+            frames: Vec::new(),
+        }
+    }
+
+    /// Reads the next frame: an 8-bit luma (Y) plane shown at `time` seconds.
+    #[napi]
+    pub fn read(
+        &mut self,
+        luma: Uint8Array,
+        width: u32,
+        height: u32,
+        time: f64,
+        stride: Option<u32>,
+    ) -> Result<CapturedFrame> {
+        let view = plane(&luma, width, height, stride)?;
+        let sample = self.inner.read(&view, time);
+        self.frames.push(sample);
+        Ok((&sample).into())
+    }
+
+    /// Every frame read so far, with any that could only be identified after
+    /// seeing later frames filled in: pass these to `analyzeFrames`.
+    #[napi]
+    pub fn finish(&mut self) -> Vec<CapturedFrame> {
+        self.inner.finish(&mut self.frames);
+        self.frames.iter().map(Into::into).collect()
+    }
 }
 
 /// Captured audio, downmixed to mono.
@@ -526,6 +680,8 @@ impl Capture {
                 Ok(VideoSample {
                     time: f.time,
                     stamp: f.stamp.as_ref().map(FrameStamp::to_core).transpose()?,
+                    qr_located: f.qr_located.unwrap_or(false),
+                    old_format: false,
                 })
             })
             .collect::<Result<Vec<_>>>()?;

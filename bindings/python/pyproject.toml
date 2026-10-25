@@ -7,7 +7,7 @@ name = "av-drift-detector"
 version = "0.3.0"
 description = "Measure audio/video sync to a fraction of a millisecond, frame by frame"
 readme = "README.md"
-license = "MIT"
+license = "BSD-2-Clause-Patent"
 license-files = ["LICENSE"]
 requires-python = ">=3.11"
 keywords = ["av-sync", "lipsync", "audio", "video", "ffmpeg", "latency"]

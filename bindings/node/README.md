@@ -42,12 +42,12 @@ for (const f of report.frames) {
 If you already have decoded frames and audio (a capture card, WebRTC, a camera), measure them without files:
 
 ```js
-const frames = myFrames.map(({ time, luma }) => ({
-  time,                                       // seconds
-  stamp: avd.readFrame(luma, width, height),  // 8-bit luma (Y) plane
-}))
+const reader = new avd.StampReader()
+for (const { time, luma } of myFrames) {
+  reader.read(luma, width, height, time)      // 8-bit luma (Y) plane, time in seconds
+}
 const report = await avd.analyzeFrames({
-  frames,
+  frames: reader.finish(),
   audio: { sampleRate: 48000, startTime: t0, samples: monoFloat32Array },
   width,
   height,
@@ -56,7 +56,8 @@ const report = await avd.analyzeFrames({
 
 Frame times and `startTime` must be on the same clock, in seconds.
 
-- **`readFrame(luma, width, height, stride?, tryQr?)`** reads a frame's stamp (barcode, then QR code), or returns `null`.
+- **`new StampReader(tryQr?)`** reads the frames of one capture in order. `read(luma, width, height, time, stride?)` returns the frame (`{ time, stamp, qrLocated }`); `finish()` returns every frame read, with any that could only be identified from later frames filled in. It follows the QR code from frame to frame, which is faster than reading each frame alone, and it reads pictures a camera caught while the screen switched frames, measuring how far through the switch each was (the stamp's `blend`). Use it for camera footage.
+- **`readFrame(luma, width, height, stride?, tryQr?)`** reads one frame's stamp (barcode, then QR code), or returns `null`.
 - **`new PatternRenderer({ fps, width, height, sampleRate, duration }).render(frameId)`** draws a test-pattern frame as a luma `Buffer`. With `duration` (seconds), the info line shows the file's length.
 - **`synthesizeAudio({ count, fps, sampleRate, delay, start, music })`** makes the test audio as a `Float32Array`, with the music unless `music` is `false`.
 
@@ -64,4 +65,4 @@ Async functions reject on bad arguments; `readFrame` and the renderer throw.
 
 ## More
 
-The [repository](https://github.com/AlexHayton/av-drift-detector) has the guides: measuring with a camera, the test pattern specification, and how the analysis works. MIT licensed.
+The [repository](https://github.com/AlexHayton/av-drift-detector) has the guides: measuring with a camera, the test pattern specification, and how the analysis works. Licensed under the BSD-2-Clause Plus Patent License.

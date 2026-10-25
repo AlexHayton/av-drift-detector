@@ -27,7 +27,7 @@ use super::{
 use crate::analyze::{AnalyzeOptions, analyze_scan, scan_window};
 use crate::audio::{ToneCode, ToneSynth};
 use crate::pattern::canvas::{LumaCanvas, LumaView};
-use crate::pattern::{PatternRenderer, decode_frame};
+use crate::pattern::{PatternRenderer, StampReader};
 use crate::report::DriftReport;
 use crate::{Error, FrameRate, Result};
 
@@ -423,6 +423,7 @@ fn read_video(
     let mut time_base = None;
     let mut luma = Vec::new();
     let mut stopped = false;
+    let mut stamps = StampReader::new(try_qr);
     while let Ok(info) = decoder.info.recv() {
         let (pts, pts_time, (w, h)) = match info {
             Info::TimeBase(n, d) => {
@@ -456,9 +457,9 @@ fn read_video(
             break;
         }
         size = (Some(w as u32), Some(h as u32));
-        let stamp = decode_frame(&LumaView::new(&luma, w, h, w), try_qr);
-        samples.push(VideoSample { time, stamp });
+        samples.push(stamps.read(&LumaView::new(&luma, w, h, w), time));
     }
+    stamps.finish(&mut samples);
     decoder.child.stdout = Some(stdout);
     decoder.finish(stopped, path)?;
     Ok((samples, size.0, size.1))

@@ -77,7 +77,7 @@ Drift    mean +40.00 ms  median +40.00 ms  min +40.00 ms  max +40.00 ms  stddev 
          = +1.20 frames at 30 fps (positive = audio late)
 Skew     +0.000 ms/min (+0.0 ppm)
 Frames   298 measured, 0 unreadable, 2 without audio, 0 dropped, 0 repeated
-Audio    298 frame cells decoded
+Audio    298 frame cells decoded; tones at -22 dBFS, 68 dB above the noise
 ```
 
 The first two frames have no audio to compare with, because the delayed audio hasn't started yet.
@@ -97,11 +97,14 @@ The drift should still read +40.00 ms. If your pipeline changes it, the differen
 |------|---------|
 | **Pattern** | The test pattern's frame rate, and where it was read from (`barcode`, `qr`, or `option` when given with `--fps`). |
 | **Window** | The span analyzed (see `--offset` and `--duration`). |
-| **Capture** | Shown for camera captures: how precisely the display's frame timing was recovered. See the [camera guide](camera.md). |
+| **Capture** | Shown for camera captures: how the display's frame timing was recovered (from frames caught mid-switch, or from frame numbers) and how precisely. See the [camera guide](camera.md). |
+| **Note** | Shown when the capture could be either a digital copy or a camera locked to the pattern's rate, with the other reading. |
 | **Drift** | Video position minus audio position at each frame, in milliseconds. **Positive means the audio is late** (you hear things after you see them). |
 | **Skew** | The slope of drift against time. A non-zero skew means the audio and video clocks run at different rates, so drift grows steadily (100 ppm ≈ 6 ms per minute). |
 | **Frames** | *measured*: frames with a drift value. *unreadable*: no stamp could be read (blended or corrupted frames). *without audio*: no decodable audio nearby (silence, or before delayed audio starts). *dropped* / *repeated*: gaps and repeats in the frame numbers, reported for file captures. |
-| **Audio** | Audio frames decoded, plus any discarded because their timing disagreed with their neighbours. |
+| **QR** | Shown when frames were read from the QR code: how many decoded, how many read by fitting them against the frames' codes, and how many were found but unreadable. |
+| **Audio** | Audio frames decoded, plus any discarded because their timing disagreed with their neighbours; and the tones' typical level and height above the noise. |
+| **Warning** | Shown when fewer than a fifth of the frames could be measured, with the likely reasons. |
 
 For every frame, add `--frames`; for machine-readable output, use `--json` or `--csv`. See the [CLI reference](cli.md).
 

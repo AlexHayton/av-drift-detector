@@ -23,6 +23,12 @@ pub enum Error {
     )]
     UnknownFrameRate,
 
+    #[error(
+        "this capture is of a test file in an older format (from av-drift 0.3 or earlier), which this \
+         version can't analyse: generate the test file again with this version, and capture it again"
+    )]
+    OldFormat,
+
     #[error("QR code: {0}")]
     Qr(String),
 

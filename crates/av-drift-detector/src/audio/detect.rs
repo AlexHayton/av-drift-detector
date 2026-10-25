@@ -9,8 +9,15 @@
 //!    pattern search narrows it to one sample. Energy weighting stops faint
 //!    windows (mostly silence) from pulling the alignment off.
 //! 2. **Decoding.** At each aligned window, the strongest tone in each band
-//!    gives one nibble of the 16-bit id. Consecutive frames must carry
-//!    consecutive ids, so the block votes and stragglers are dropped.
+//!    gives one nibble of the 16-bit id. A band counts only if its tone is
+//!    clean (purity) and clear of the noise, which is measured on the unused
+//!    harmonics between the bands. There's no fixed loudness floor: a quiet
+//!    recording decodes as long as its tones stand above its own noise.
+//!    Consecutive frames carry consecutive ids, so the block votes. Stragglers
+//!    are dropped, and a band that some cells lost (a notch in a speaker or a
+//!    room, a suppressed tone) is filled in from the others. If a band is lost
+//!    throughout a block, the id is known only modulo a power of 16, and the
+//!    analyser resolves the rest against the video.
 //! 3. **Matched filter.** With the ids known, the block's clean waveform is
 //!    known exactly. Cross-correlating it with the recording finds the direct
 //!    sound to the nearest sample. Purity alone is pulled late by room echo
@@ -19,18 +26,17 @@
 //!    The peak's sign also reveals an inverted microphone polarity.
 //! 4. **Sub-sample timing.** Each tone's phase at the window start is
 //!    `2π·f·(source time)`, so it gives the source time to a small fraction
-//!    of a sample. Phases are unwrapped from the lowest frequency upwards and
-//!    combined.
+//!    of a sample. Phases of the readable bands are unwrapped from the lowest
+//!    frequency upwards and combined.
 
-use std::cmp::Reverse;
-use std::collections::HashMap;
+use std::collections::HashSet;
 use std::f64::consts::TAU;
 use std::sync::Arc;
 
 use rustfft::num_complex::Complex;
 use rustfft::{Fft, FftPlanner};
 
-use super::code::{BANDS, TONE_AMPLITUDE, TONE_COUNT, TONES_PER_BAND, ToneCode};
+use super::code::{BANDS, ID_MODULUS, TONE_COUNT, TONES_PER_BAND, ToneCode};
 
 /// Frames aligned together; the boundary phase is assumed constant within a block.
 const BLOCK_CELLS: usize = 8;
@@ -39,6 +45,10 @@ const BLOCK_CELLS: usize = 8;
 const GRID_FIRST: i64 = -1;
 const GRID_LAST: i64 = BLOCK_CELLS as i64 + 3;
 const GRID_CELLS: usize = (GRID_LAST - GRID_FIRST + 1) as usize;
+/// Readable bands a cell needs: band 0, which aligns and times it, and one more.
+const MIN_BANDS: u32 = 2;
+/// Signal-to-noise ratios are capped here, so clean synthetic audio stays finite.
+const MAX_SNR_DB: f32 = 120.0;
 
 /// One decoded audio frame.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -47,31 +57,46 @@ pub struct AudioCell {
     pub sample: usize,
     /// Container time of `sample`, in seconds.
     pub time: f64,
-    /// The 16-bit frame id carried by the tones.
+    /// The frame id carried by the tones, modulo [`modulus`](Self::modulus).
     pub id: u16,
+    /// The id is known modulo this power of 16: 65536 normally, less when a
+    /// band was unreadable throughout the block, so its nibble (and those
+    /// above it) must come from elsewhere, such as the video.
+    pub modulus: u32,
     /// Source time at `time` relative to the start of frame `id`, in seconds.
     /// The audio's source position at `time` is `id_unwrapped / fps + residual`.
     pub residual: f64,
-    /// The weakest band's tone purity, from 0 to 1.
+    /// The weakest readable band's tone purity, from 0 to 1.
     pub confidence: f32,
-    /// The weakest band's tone amplitude (1.0 = full scale).
+    /// The weakest readable band's tone amplitude (1.0 = full scale).
     pub amplitude: f32,
+    /// The weakest readable band's energy above the noise between the bands, in dB.
+    pub snr_db: f32,
+    /// Which bands were readable (bit `b` for band `b`). The others were
+    /// left out of the timing.
+    pub bands: u8,
 }
 
 /// Detects and decodes [`AudioCell`]s in a mono sample buffer.
 pub struct CellDetector {
     code: ToneCode,
     window: usize,
-    /// Per-tone reference tables, indexed `band * 16 + nibble`.
+    /// Per-tone reference tables, indexed `band * 16 + tone`.
     cos: Vec<Vec<f32>>,
     sin: Vec<Vec<f32>>,
-    /// Cells quieter than this (in any band) are ignored. The default, 40 dB
-    /// below a generated tone (-62 dBFS), suits quiet microphone recordings;
-    /// random noise is rejected by purity instead.
+    /// Reference tables for the unused harmonics between the bands.
+    guard_cos: Vec<Vec<f32>>,
+    guard_sin: Vec<Vec<f32>>,
+    /// A band is unreadable if its tone is quieter than this (1.0 = full
+    /// scale). The default, about −110 dBFS, only rejects digital silence:
+    /// noise is handled by `min_snr_db` and `min_confidence`, whatever the level.
     pub min_amplitude: f32,
-    /// Cells whose weakest band purity is below this are ignored. Noise alone
+    /// A band is unreadable if its tone purity is below this. Noise alone
     /// scores about 0.2; room echo lowers real cells to around 0.7–0.9.
     pub min_confidence: f32,
+    /// A band is unreadable if its tone is less than this many dB above the
+    /// noise, measured on the unused harmonics between the bands.
+    pub min_snr_db: f32,
     /// Matched filter: block length and lag search range (samples), FFT plans.
     block_span: usize,
     search: usize,
@@ -80,21 +105,61 @@ pub struct CellDetector {
     ifft: Arc<dyn Fft<f32>>,
 }
 
+/// One window's tones, before the block's vote settles its id.
+#[derive(Clone, Copy, Debug)]
+struct Reading {
+    sample: usize,
+    /// The strongest tone in each band.
+    tones: [usize; BANDS],
+    phases: [f64; BANDS],
+    amplitudes: [f32; BANDS],
+    purity: [f32; BANDS],
+    snr_db: [f32; BANDS],
+    /// Readable bands, a bit per band. Band 0 always is.
+    good: u8,
+}
+
+impl Reading {
+    fn readable(&self, band: usize) -> bool {
+        self.good & (1 << band) != 0
+    }
+}
+
+/// The block's vote: the id at grid index 0, known modulo `modulus`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Vote {
+    base: u16,
+    modulus: u32,
+}
+
+/// Cosine and sine tables of harmonic `k` over one window.
+fn reference_tables(code: &ToneCode, k: u32, window: usize) -> (Vec<f32>, Vec<f32>) {
+    let w = TAU * f64::from(k) * code.fps().as_f64() / f64::from(code.sample_rate());
+    (
+        (0..window).map(|n| (w * n as f64).cos() as f32).collect(),
+        (0..window).map(|n| (w * n as f64).sin() as f32).collect(),
+    )
+}
+
 impl CellDetector {
     pub fn new(code: ToneCode) -> Self {
         let window = code.samples_per_frame().round() as usize;
-        let rate = f64::from(code.sample_rate());
         let (mut cos, mut sin) = (
             Vec::with_capacity(TONE_COUNT),
             Vec::with_capacity(TONE_COUNT),
         );
         for band in 0..BANDS {
-            for nibble in 0..TONES_PER_BAND {
-                let w = TAU * code.frequency(band, nibble) / rate;
-                cos.push((0..window).map(|n| (w * n as f64).cos() as f32).collect());
-                sin.push((0..window).map(|n| (w * n as f64).sin() as f32).collect());
+            for tone in 0..TONES_PER_BAND {
+                let (c, s) = reference_tables(&code, code.harmonic(band, tone), window);
+                cos.push(c);
+                sin.push(s);
             }
         }
+        let (guard_cos, guard_sin) = code
+            .guard_harmonics()
+            .into_iter()
+            .map(|k| reference_tables(&code, k, window))
+            .unzip();
         // Room for the longest template: every cell `decode_grid` can return.
         let block_span = (GRID_CELLS as f64 * code.samples_per_frame()).ceil() as usize + 1;
         let search = window / 2;
@@ -109,8 +174,11 @@ impl CellDetector {
             window,
             cos,
             sin,
-            min_amplitude: (TONE_AMPLITUDE / 100.0) as f32,
+            guard_cos,
+            guard_sin,
+            min_amplitude: 10f32.powf(-110.0 / 20.0),
             min_confidence: 0.5,
+            min_snr_db: 10.0,
             block_span,
             search,
             fft_size,
@@ -192,48 +260,43 @@ impl CellDetector {
 
     /// Decodes the cells of one aligned block, keeping those whose ids agree.
     fn decode_block(&self, samples: &[f32], first: f64, start_time: f64) -> Vec<AudioCell> {
-        let decoded = self.decode_grid(samples, first, 1.0, start_time);
-        let Some(base) = vote(&decoded) else {
+        let readings = self.decode_grid(samples, first, 1.0);
+        let Some(v) = vote(&readings) else {
             return Vec::new();
         };
-        let agreeing = decoded
+        let agreeing = readings
             .iter()
-            .filter(|(j, c)| grid_base(*j, c) == base)
+            .filter(|(j, r)| consistent(v.base, *j, r))
             .map(|(j, _)| *j);
         let (j_min, j_max) =
             agreeing.fold((i64::MAX, i64::MIN), |(lo, hi), j| (lo.min(j), hi.max(j)));
-        let (first, polarity) = match self.matched_lag(samples, first, base, j_min..=j_max) {
-            Some((lag, polarity)) => (first + lag, polarity),
-            None => (first, 1.0),
-        };
-        let decoded = self.decode_grid(samples, first, polarity, start_time);
-        let Some(base) = vote(&decoded) else {
+        let (first, polarity) =
+            match self.matched_lag(samples, first, i64::from(v.base), j_min..=j_max) {
+                Some((lag, polarity)) => (first + lag, polarity),
+                None => (first, 1.0),
+            };
+        let readings = self.decode_grid(samples, first, polarity);
+        let Some(v) = vote(&readings) else {
             return Vec::new();
         };
-        decoded
-            .into_iter()
-            .filter(|(j, c)| grid_base(*j, c) == base)
-            .map(|(_, c)| c)
+        readings
+            .iter()
+            .filter(|(j, r)| consistent(v.base, *j, r))
+            .map(|(j, r)| self.cell(r, v.base.wrapping_add(*j as u16), v.modulus, start_time))
             .collect()
     }
 
-    /// Decodes the cells on the grid `first + j·spf` for `j` in
+    /// Reads the cells on the grid `first + j·spf` for `j` in
     /// `GRID_FIRST..=GRID_LAST` (out-of-range windows are skipped).
-    fn decode_grid(
-        &self,
-        samples: &[f32],
-        first: f64,
-        polarity: f32,
-        start_time: f64,
-    ) -> Vec<(i64, AudioCell)> {
+    fn decode_grid(&self, samples: &[f32], first: f64, polarity: f32) -> Vec<(i64, Reading)> {
         let spf = self.code.samples_per_frame();
         (GRID_FIRST..=GRID_LAST)
             .filter_map(|j| {
                 let p = (first + j as f64 * spf).round();
                 (p >= 0.0)
-                    .then(|| self.decode_cell(samples, p as usize, polarity, start_time))
+                    .then(|| self.read_cell(samples, p as usize, polarity))
                     .flatten()
-                    .map(|c| (j, c))
+                    .map(|r| (j, r))
             })
             .collect()
     }
@@ -246,9 +309,9 @@ impl CellDetector {
     /// Band 0 steps to a new tone every frame, so this has a single clean
     /// peak with weak side lobes, and a later, weaker echo can't win. Fine:
     /// the full waveform near that peak, which pins the direct sound to a sample.
-    /// The full waveform alone can't be trusted over the whole range: bands 1–3
-    /// hold steady tones across a block, giving strong side peaks that an echo
-    /// can push over the true one.
+    /// The full waveform's correlation has side peaks a whole cycle of each
+    /// tone either side of the true one, which an echo can push over it, so
+    /// it's only searched near the coarse peak.
     fn matched_lag(
         &self,
         samples: &[f32],
@@ -326,116 +389,211 @@ impl CellDetector {
         (best, total)
     }
 
-    /// Decodes the frame cell starting near sample `p`, if it is loud and clean
-    /// enough. `polarity` is -1 for an inverted recording.
+    /// Reads the cell starting near sample `p`, if enough of its bands are
+    /// clean. `polarity` is -1 for an inverted recording.
     ///
     /// If the measured residual shows `p` is a sample or more off the boundary,
-    /// the window is re-centred once and decoded again (less leakage from the
+    /// the window is re-centred once and read again (less leakage from the
     /// neighbouring frame).
-    fn decode_cell(
-        &self,
-        samples: &[f32],
-        p: usize,
-        polarity: f32,
-        start_time: f64,
-    ) -> Option<AudioCell> {
-        let cell = self.decode_window(samples, p, polarity, start_time)?;
-        let shift = (cell.residual * f64::from(self.code.sample_rate())).round() as i64;
+    fn read_cell(&self, samples: &[f32], p: usize, polarity: f32) -> Option<Reading> {
+        let r = self.read_window(samples, p, polarity)?;
+        let shift = (self.residual(&r) * f64::from(self.code.sample_rate())).round() as i64;
         if shift == 0 {
-            return Some(cell);
+            return Some(r);
         }
-        let q = usize::try_from(p as i64 - shift).ok()?;
-        self.decode_window(samples, q, polarity, start_time)
-            .filter(|c| c.id == cell.id)
-            .or(Some(cell))
+        let Ok(q) = usize::try_from(p as i64 - shift) else {
+            return Some(r);
+        };
+        let same = |c: &Reading| {
+            (0..BANDS).all(|b| !r.readable(b) || (c.readable(b) && c.tones[b] == r.tones[b]))
+        };
+        Some(
+            self.read_window(samples, q, polarity)
+                .filter(same)
+                .unwrap_or(r),
+        )
     }
 
-    fn decode_window(
-        &self,
-        samples: &[f32],
-        p: usize,
-        polarity: f32,
-        start_time: f64,
-    ) -> Option<AudioCell> {
+    /// The tones in the window at `p`, or `None` unless band 0 and at least
+    /// one other band are readable.
+    fn read_window(&self, samples: &[f32], p: usize, polarity: f32) -> Option<Reading> {
         let x = samples.get(p..p + self.window)?;
         let half_window = self.window as f32 / 2.0;
-        let mut nibbles = [0usize; BANDS];
-        let mut phases = [0.0f64; BANDS];
-        let mut amplitudes = [0.0f32; BANDS];
-        let mut confidence = 1.0f32;
+        let mut guard: Vec<f32> = self
+            .guard_cos
+            .iter()
+            .zip(&self.guard_sin)
+            .map(|(c, s)| {
+                let (re, im) = dot2(x, c, s);
+                re * re + im * im
+            })
+            .collect();
+        guard.sort_by(f32::total_cmp);
+        let noise = match guard.len() {
+            0 => 0.0,
+            n => (guard[(n - 1) / 2] + guard[n / 2]) / 2.0,
+        };
+        let min_ratio = 10f32.powf(self.min_snr_db / 10.0);
+        let max_ratio = 10f32.powf(MAX_SNR_DB / 10.0);
+        let mut r = Reading {
+            sample: p,
+            tones: [0; BANDS],
+            phases: [0.0; BANDS],
+            amplitudes: [0.0; BANDS],
+            purity: [0.0; BANDS],
+            snr_db: [0.0; BANDS],
+            good: 0,
+        };
         for band in 0..BANDS {
-            let (mut best, mut best_e, mut total) = (0, -1.0f32, 0.0f32);
+            let (mut best, mut best_e, mut total) = (0, 0.0f32, 0.0f32);
             let mut best_re_im = (0.0, 0.0);
-            for nibble in 0..TONES_PER_BAND {
-                let tone = band * TONES_PER_BAND + nibble;
-                let (re, im) = dot2(x, &self.cos[tone], &self.sin[tone]);
+            for tone in 0..TONES_PER_BAND {
+                let t = band * TONES_PER_BAND + tone;
+                let (re, im) = dot2(x, &self.cos[t], &self.sin[t]);
                 let e = re * re + im * im;
                 total += e;
                 if e > best_e {
-                    (best, best_e, best_re_im) = (nibble, e, (re, im));
+                    (best, best_e, best_re_im) = (tone, e, (re, im));
                 }
             }
-            nibbles[band] = best;
-            amplitudes[band] = best_e.max(0.0).sqrt() / half_window;
+            r.tones[band] = best;
+            r.amplitudes[band] = best_e.sqrt() / half_window;
             // For x[n] = a·sin(θ + ωn): Σx·cos(ωn) ≈ (aL/2)·sin θ and Σx·sin(ωn) ≈ (aL/2)·cos θ.
-            phases[band] = f64::from((polarity * best_re_im.0).atan2(polarity * best_re_im.1));
-            confidence = confidence.min(if total > 0.0 { best_e / total } else { 0.0 });
-        }
-        let amplitude = amplitudes.iter().copied().fold(f32::MAX, f32::min);
-        if amplitude < self.min_amplitude || confidence < self.min_confidence {
-            return None;
-        }
-
-        // θ = 2π·f·(source time) and f·(frame start) is a whole number of cycles,
-        // so θ/(2πf) is the source time relative to the frame start, modulo 1/f.
-        let (mut estimate, mut weight_sum) = (0.0f64, 0.0f64);
-        for band in 0..BANDS {
-            let f = self.code.frequency(band, nibbles[band]);
-            let mut r = phases[band] / (TAU * f);
-            if weight_sum > 0.0 {
-                r += ((estimate - r) * f).round() / f;
+            r.phases[band] = f64::from((polarity * best_re_im.0).atan2(polarity * best_re_im.1));
+            r.purity[band] = if total > 0.0 { best_e / total } else { 0.0 };
+            let ratio = if noise > 0.0 {
+                (best_e / noise).min(max_ratio)
+            } else if best_e > 0.0 {
+                max_ratio
+            } else {
+                0.0
+            };
+            r.snr_db[band] = if ratio > 0.0 {
+                10.0 * ratio.log10()
+            } else {
+                -MAX_SNR_DB
+            };
+            if r.amplitudes[band] >= self.min_amplitude
+                && r.purity[band] >= self.min_confidence
+                && ratio >= min_ratio
+            {
+                r.good |= 1 << band;
             }
-            let w = (f * f64::from(amplitudes[band])).powi(2);
-            estimate = (estimate * weight_sum + r * w) / (weight_sum + w);
+        }
+        (r.readable(0) && r.good.count_ones() >= MIN_BANDS).then_some(r)
+    }
+
+    /// Source time at the window start relative to the start of its frame,
+    /// from the phases of the readable bands.
+    ///
+    /// θ = 2π·f·(source time) and f·(frame start) is a whole number of cycles,
+    /// so θ/(2πf) is the source time relative to the frame start, modulo 1/f.
+    /// Windows sit on frame boundaries to within a sample or two (the matched
+    /// filter puts them there), so each band's time is taken as the one within
+    /// half a cycle of zero. Unwrapping each band against the lower bands'
+    /// estimate instead lets a weak or echo-biased low band pull a stronger
+    /// high band onto the wrong cycle, a jump of a whole period (0.4–1.7 ms).
+    fn residual(&self, r: &Reading) -> f64 {
+        let (mut estimate, mut weight_sum) = (0.0f64, 0.0f64);
+        for band in (0..BANDS).filter(|&b| r.readable(b)) {
+            let f = self.code.frequency(band, r.tones[band]);
+            let mut x = r.phases[band] / (TAU * f);
+            x -= (x * f).round() / f;
+            let w = (f * f64::from(r.amplitudes[band])).powi(2);
+            estimate = (estimate * weight_sum + x * w) / (weight_sum + w);
             weight_sum += w;
         }
-
-        Some(AudioCell {
-            sample: p,
-            time: start_time + p as f64 / f64::from(self.code.sample_rate()),
-            id: ToneCode::id_from_nibbles(nibbles),
-            residual: estimate,
-            confidence,
-            amplitude,
-        })
+        estimate
     }
+
+    /// The decoded cell for reading `r`, whose id the block's vote settled.
+    fn cell(&self, r: &Reading, id: u16, modulus: u32, start_time: f64) -> AudioCell {
+        let weakest = |v: &[f32; BANDS]| {
+            (0..BANDS)
+                .filter(|&b| r.readable(b))
+                .map(|b| v[b])
+                .fold(f32::INFINITY, f32::min)
+        };
+        AudioCell {
+            sample: r.sample,
+            time: start_time + r.sample as f64 / f64::from(self.code.sample_rate()),
+            id,
+            modulus,
+            residual: self.residual(r),
+            confidence: weakest(&r.purity),
+            amplitude: weakest(&r.amplitudes),
+            snr_db: weakest(&r.snr_db),
+            bands: r.good,
+        }
+    }
+}
+
+/// Whether reading `r` at grid index `j` agrees with id `base` at index 0 in
+/// every band it could read.
+fn consistent(base: u16, j: i64, r: &Reading) -> bool {
+    let tones = ToneCode::tones(base.wrapping_add(j as u16));
+    (0..BANDS).all(|b| !r.readable(b) || tones[b] == r.tones[b])
 }
 
 /// Consecutive cells carry consecutive ids: votes on the id at grid index 0.
-/// Returns it, or `None` if the cells don't agree.
-fn vote(decoded: &[(i64, AudioCell)]) -> Option<i64> {
-    let mut votes: HashMap<i64, usize> = HashMap::new();
-    for (j, cell) in decoded {
-        *votes.entry(grid_base(*j, cell)).or_default() += 1;
+///
+/// Each reading proposes every base it's consistent with (16 per unreadable
+/// band), and each proposal scores the readings that agree with it. Bases
+/// that tie differ only in nibbles no agreeing reading could see, so the id is
+/// then known only modulo the lowest of those nibbles. Returns `None` if the
+/// readings don't agree.
+fn vote(readings: &[(i64, Reading)]) -> Option<Vote> {
+    let mut candidates: HashSet<u16> = HashSet::new();
+    for (j, r) in readings {
+        let low = r.tones[0];
+        let unknown: Vec<usize> = (0..BANDS).filter(|&b| !r.readable(b)).collect();
+        for combo in 0..16usize.pow(unknown.len() as u32) {
+            let mut nibbles: [usize; BANDS] =
+                std::array::from_fn(|b| ToneCode::nibble(b, r.tones[b], low));
+            for (i, &b) in unknown.iter().enumerate() {
+                nibbles[b] = (combo >> (4 * i)) & 0xF;
+            }
+            candidates.insert(ToneCode::id_from_nibbles(nibbles).wrapping_sub(*j as u16));
+        }
     }
-    let (&winner, &count) = votes.iter().max_by_key(|&(&b, &n)| (n, Reverse(b)))?;
-    (count > 1 || decoded.len() == 1).then_some(winner)
-}
-
-/// The id that grid cell 0 would carry, according to cell `j`.
-fn grid_base(j: i64, cell: &AudioCell) -> i64 {
-    (i64::from(cell.id) - j).rem_euclid(1 << 16)
+    let scored: Vec<(u16, usize)> = candidates
+        .into_iter()
+        .map(|b| {
+            (
+                b,
+                readings
+                    .iter()
+                    .filter(|(j, r)| consistent(b, *j, r))
+                    .count(),
+            )
+        })
+        .collect();
+    let best = scored.iter().map(|s| s.1).max()?;
+    if best < 2 && readings.len() != 1 {
+        return None;
+    }
+    let tied = || scored.iter().filter(|s| s.1 == best).map(|s| s.0);
+    let base = tied().min()?;
+    let differ = tied().fold(0u16, |acc, b| acc | (b ^ base));
+    let modulus = if differ == 0 {
+        ID_MODULUS
+    } else {
+        1 << (4 * (differ.trailing_zeros() / 4))
+    };
+    Some(Vote { base, modulus })
 }
 
 /// Sorts cells by position and, of any closer than `min_gap` samples, keeps
-/// the best aligned (a misaligned window has lower purity or amplitude).
+/// the best: the most certain id, then the most readable bands, then the best
+/// aligned (a misaligned window has lower purity or amplitude).
 fn dedup_cells(cells: &mut Vec<AudioCell>, min_gap: f64) {
     cells.sort_by_key(|c| c.sample);
+    let rank = |c: &AudioCell| (c.modulus, c.bands.count_ones(), c.confidence * c.amplitude);
     let mut out: Vec<AudioCell> = Vec::with_capacity(cells.len());
     for cell in cells.drain(..) {
         match out.last_mut() {
             Some(last) if ((cell.sample - last.sample) as f64) < min_gap => {
-                if cell.confidence * cell.amplitude > last.confidence * last.amplitude {
+                if rank(&cell).partial_cmp(&rank(last)) == Some(std::cmp::Ordering::Greater) {
                     *last = cell;
                 }
             }

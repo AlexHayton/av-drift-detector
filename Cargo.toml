@@ -13,7 +13,7 @@ default-members = ["crates/av-drift-detector"]
 [workspace.package]
 edition = "2024"
 rust-version = "1.88"
-license = "MIT"
+license = "BSD-2-Clause-Patent"
 repository = "https://github.com/AlexHayton/av-drift-detector"
 
 # The DSP and pixel loops are far too slow unoptimised; keep tests usable.

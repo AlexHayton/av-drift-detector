@@ -26,6 +26,7 @@
 
 pub mod analyze;
 pub mod audio;
+pub mod camera;
 mod error;
 pub mod media;
 pub mod pattern;

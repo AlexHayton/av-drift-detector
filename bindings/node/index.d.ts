@@ -22,6 +22,30 @@ export declare class PatternRenderer {
 }
 
 /**
+ * Reads the stamps of consecutive frames of one capture. It remembers where
+ * the QR code was, which is faster, and reads codes caught between two
+ * frames that `readFrame` can't.
+ */
+export declare class StampReader {
+  /** A reader that falls back to the QR code unless `tryQr` is false. */
+  constructor(tryQr?: boolean | undefined | null)
+  /** Reads the next frame: an 8-bit luma (Y) plane shown at `time` seconds. */
+  read(luma: Uint8Array, width: number, height: number, time: number, stride?: number | undefined | null): CapturedFrame
+  /**
+   * Every frame read so far, with any that could only be identified after
+   * seeing later frames filled in: pass these to `analyzeFrames`.
+   */
+  finish(): Array<CapturedFrame>
+}
+
+/** What a capture would measure if it were the other kind (`DriftReport.alternative`). */
+export interface AlternativeReading {
+  capture: 'file' | 'camera'
+  meanMs: number
+  videoTimingUncertaintyMs?: number
+}
+
+/**
  * Measures the A/V drift of every frame in a capture of a test video, as
  * `av-drift analyze` does. Decodes by running the `ffmpeg` and `ffprobe`
  * programs (FFmpeg 5.1+, on `PATH` or at `AV_DRIFT_FFMPEG` and `AV_DRIFT_FFPROBE`).
@@ -64,6 +88,20 @@ export interface AudioOptions {
   music?: boolean
 }
 
+/** A picture read as a mix of two consecutive frames. */
+export interface Blend {
+  /** The earlier frame: the picture mixes `first` and `first + 1`. */
+  first: number
+  /** The weight of `first + 1` (0 to 1): the share of the exposure after the switch. */
+  weightNext: number
+  /** How much the weight grows from the code's top row to its bottom row. */
+  slope: number
+  /** Root-mean-square error of the fit (black 0, white 1). */
+  rms: number
+  /** The error of the best fit naming another frame, over `rms`. */
+  margin: number
+}
+
 /** A capture decoded by your own code, for `analyzeFrames`. */
 export interface Capture {
   frames: Array<CapturedFrame>
@@ -85,6 +123,8 @@ export interface CapturedFrame {
   /** Seconds, on the same clock as the audio's `startTime`. */
   time: number
   stamp?: FrameStamp
+  /** Whether a QR code was found, even if it couldn't be read. */
+  qrLocated?: boolean
 }
 
 /** The result of analysing a capture: the same content as `av-drift analyze --json`. */
@@ -98,6 +138,19 @@ export interface DriftReport {
   capture: 'file' | 'camera'
   /** Camera captures: ± how well the display's frame timing is known. */
   videoTimingUncertaintyMs?: number
+  /** Camera captures: how the display's timeline was found. */
+  videoTiming?: 'blend' | 'bounds'
+  /** The camera's exposure time, where the capture let it be measured. */
+  exposureMs?: number
+  /** The longest exposure allowed for, where it couldn't be measured. */
+  maxExposureMs?: number
+  /** Frames the display showed noticeably early or late. */
+  displayJudder: number
+  /**
+   * When the stamps fit both a digital copy and a camera locked to the
+   * pattern's rate: what the other reading would say.
+   */
+  alternative?: AlternativeReading
   width: number
   height: number
   offset: number
@@ -126,6 +179,16 @@ export interface DriftSummary {
   noAudio: number
   audioCells: number
   audioOutliers: number
+  /** Median level of each decoded audio cell's weakest tone, in dBFS. */
+  audioLevelDbfs?: number
+  /** Median height of each cell's weakest tone above the noise, in dB. */
+  audioSnrDb?: number
+  /** Frames where a QR code was found but couldn't be read. */
+  qrLocatedUnread: number
+  /** Frames read by fitting the QR code against rendered frames' codes. */
+  qrBlendFrames: number
+  /** Frames that caught the display switching between two frames. */
+  mixedFrames: number
 }
 
 /** Drift measured at one captured video frame. */
@@ -136,7 +199,12 @@ export interface FrameDrift {
   videoFrame?: number
   /** Source video position at `time`, in (fractional) frames. */
   videoPosition?: number
-  stampSource?: 'barcode' | 'qr'
+  stampSource?: 'barcode' | 'barcode_blend' | 'qr' | 'qr_blend'
+  /**
+   * How far the picture had switched to the next frame (0 to 1), where it
+   * showed a blend of two frames.
+   */
+  videoBlend?: number
   /** Source position of the audio playing at `time`, in (fractional) frames. */
   audioFrame?: number
   /** Video minus audio, in milliseconds: positive means the audio is late. */
@@ -155,7 +223,14 @@ export interface FrameStamp {
   fps?: string
   /** The audio tone plan's base harmonic (QR codes only). */
   toneBaseHarmonic?: number
-  source: 'barcode' | 'qr'
+  source: 'barcode' | 'barcode_blend' | 'qr' | 'qr_blend'
+  /**
+   * The QR code's corners in frame pixels (top left, top right, bottom
+   * right, bottom left, as printed): `[x, y]` pairs.
+   */
+  corners?: Array<Array<number>>
+  /** How the picture mixed two consecutive frames, where measured. */
+  blend?: Blend
 }
 
 /**

@@ -15,7 +15,7 @@
 use super::canvas::{BLACK, LumaCanvas, LumaView, Rect, WHITE};
 use crate::FrameRate;
 
-pub const VERSION: u8 = 1;
+pub const VERSION: u8 = 2;
 pub const ROWS: usize = 3;
 pub const DATA_COLS: usize = 16;
 pub const COLS: usize = DATA_COLS + 2;
@@ -81,15 +81,29 @@ pub enum BarcodeError {
     Version(u8),
 }
 
-/// Packs a stamp into the 48-bit word drawn on screen.
+/// Packs a stamp into the 48-bit word drawn on screen. The frame number is
+/// Gray-coded, so consecutive frames differ in a single frame-number cell (and
+/// the CRC cells): a picture caught between two frames is grey in only a few
+/// cells, and reads, thresholded, as one frame or the other.
 pub fn pack(frame_id: u32, fps: FrameRate) -> u64 {
     assert!(
         frame_id <= MAX_FRAME_ID,
         "frame id {frame_id} exceeds 24 bits"
     );
-    let word =
-        u64::from(VERSION) << 44 | u64::from(fps_code(fps)) << 40 | u64::from(frame_id) << 16;
+    let gray = frame_id ^ (frame_id >> 1);
+    let word = u64::from(VERSION) << 44 | u64::from(fps_code(fps)) << 40 | u64::from(gray) << 16;
     word | u64::from(crc8(&word.to_be_bytes()[2..7]))
+}
+
+/// The number whose Gray code is `gray`.
+fn from_gray(gray: u32) -> u32 {
+    let mut n = gray;
+    let mut shift = 1;
+    while shift < 32 {
+        n ^= n >> shift;
+        shift <<= 1;
+    }
+    n
 }
 
 /// Validates and unpacks a 48-bit word read from screen.
@@ -102,7 +116,7 @@ pub fn unpack(word: u64) -> Result<BarcodeStamp, BarcodeError> {
         return Err(BarcodeError::Version(version));
     }
     Ok(BarcodeStamp {
-        frame_id: ((word >> 16) & 0xFF_FFFF) as u32,
+        frame_id: from_gray(((word >> 16) & 0xFF_FFFF) as u32),
         fps: fps_from_code(((word >> 40) & 0xF) as u8),
     })
 }
@@ -191,6 +205,99 @@ pub fn read(view: &LumaView<'_>) -> Result<BarcodeStamp, BarcodeError> {
     unpack(word)
 }
 
+/// The 48 data cells' brightness, normalised so that the black guards are 0
+/// and the white guards 1, or `None` if the guards don't show a barcode.
+pub fn sample(view: &LumaView<'_>) -> Option<[f32; BITS]> {
+    let size = (view.width() as f64, view.height() as f64);
+    sample_mapped(view, size, 1.0, |x, y| Some((x, y)))
+}
+
+/// [`sample`] for a picture of a `frame_size` test frame that isn't
+/// pixel-aligned (a camera's): `map` takes a test-frame pixel to the view's,
+/// and `scale` is roughly how many view pixels one test-frame pixel covers.
+pub fn sample_mapped(
+    view: &LumaView<'_>,
+    frame_size: (f64, f64),
+    scale: f64,
+    map: impl Fn(f64, f64) -> Option<(f64, f64)>,
+) -> Option<[f32; BITS]> {
+    let (w, h) = frame_size;
+    let (x0, y0, x1, y1) = cell_bounds(w, h, 0, 0);
+    let radius = (((x1 - x0).min(y1 - y0) * scale / 8.0) as usize).clamp(1, 6);
+    let (vw, vh) = (view.width() as f64, view.height() as f64);
+    let at = |row: usize, col: usize| {
+        let (x0, y0, x1, y1) = cell_bounds(w, h, row, col);
+        let (x, y) = map((x0 + x1) / 2.0, (y0 + y1) / 2.0)?;
+        ((0.0..vw).contains(&x) && (0.0..vh).contains(&y)).then(|| view.mean_patch(x, y, radius))
+    };
+    let mut cells = [0.0f64; BITS];
+    for (i, cell) in cells.iter_mut().enumerate() {
+        *cell = at(i / DATA_COLS, 1 + i % DATA_COLS)?;
+    }
+    let (mut white, mut black) = (0.0, 0.0);
+    for row in 0..ROWS {
+        white += at(row, 0)?;
+        black += at(row, COLS - 1)?;
+    }
+    let (white, black) = (white / ROWS as f64, black / ROWS as f64);
+    if white - black < MIN_CONTRAST {
+        return None;
+    }
+    Some(cells.map(|v| ((v - black) / (white - black)) as f32))
+}
+
+/// The word frame `frame_id` shows: `fps` is the rate the barcode carries
+/// (`None` for a rate without a code).
+pub fn word(frame_id: u32, fps: Option<FrameRate>) -> u64 {
+    // Any rate without a code packs the same.
+    let fps = fps.unwrap_or(FrameRate::new(15, 1).expect("valid rate"));
+    pack(frame_id.min(MAX_FRAME_ID), fps)
+}
+
+/// Fits the cells as a blend of two consecutive frames' words, the earlier
+/// one in `candidates`, as `pattern::qr_fit` does for QR codes. A
+/// frame caught mid-switch fails the CRC; this reads it, and measures the mix.
+pub fn fit_blend(
+    cells: &[f32; BITS],
+    fps: Option<FrameRate>,
+    candidates: std::ops::RangeInclusive<u32>,
+) -> Option<super::Blend> {
+    let bits = |word: u64| -> [f32; BITS] {
+        std::array::from_fn(|i| ((word >> (BITS - 1 - i)) & 1) as f32)
+    };
+    let fits: Vec<super::Blend> = candidates
+        .filter(|&m| m < MAX_FRAME_ID)
+        .map(|m| {
+            let (a, b) = (bits(word(m, fps)), bits(word(m + 1, fps)));
+            let (mut num, mut den) = (0.0f64, 0.0f64);
+            for i in 0..BITS {
+                let d = f64::from(b[i] - a[i]);
+                num += d * f64::from(cells[i] - a[i]);
+                den += d * d;
+            }
+            let beta = if den > 0.0 {
+                (num / den).clamp(0.0, 1.0)
+            } else {
+                0.0
+            };
+            let sq: f64 = (0..BITS)
+                .map(|i| {
+                    let predicted = f64::from(a[i]) + beta * f64::from(b[i] - a[i]);
+                    (f64::from(cells[i]) - predicted).powi(2)
+                })
+                .sum();
+            super::Blend {
+                first: m,
+                weight_next: beta as f32,
+                slope: 0.0,
+                rms: (sq / BITS as f64).sqrt() as f32,
+                margin: 0.0,
+            }
+        })
+        .collect();
+    super::blend::choose(&fits)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -219,6 +326,25 @@ mod tests {
         }
         let custom = FrameRate::new(15, 1).unwrap();
         assert_eq!(unpack(pack(7, custom)).unwrap().fps, None);
+    }
+
+    #[test]
+    fn consecutive_frames_differ_in_one_frame_cell() {
+        let fps = FrameRate::new(30, 1).unwrap();
+        for id in [0u32, 1, 2, 4095, 65535, 1_234_567, MAX_FRAME_ID - 1] {
+            let field = |w: u64| (w >> 16) & 0xFF_FFFF;
+            let diff = field(pack(id, fps)) ^ field(pack(id + 1, fps));
+            assert_eq!(diff.count_ones(), 1, "{id} -> {}", id + 1);
+            assert_eq!(from_gray(id ^ (id >> 1)), id);
+        }
+    }
+
+    #[test]
+    fn older_versions_are_recognised() {
+        // Version 1 (0.3 and earlier): plain binary frame number.
+        let word = 1u64 << 44 | 5u64 << 40 | 1234u64 << 16;
+        let word = word | u64::from(crc8(&word.to_be_bytes()[2..7]));
+        assert_eq!(unpack(word), Err(BarcodeError::Version(1)));
     }
 
     #[test]
@@ -264,6 +390,34 @@ mod tests {
             *px = (squashed + noise).clamp(0, 255) as u8;
         }
         assert_eq!(read(&img.view()).unwrap().frame_id, 777_777);
+    }
+
+    #[test]
+    fn fits_blends_of_two_frames() {
+        let fps = FrameRate::new(30, 1).unwrap();
+        let frame = |id: u32| {
+            let mut img = LumaImage::new(640, 360, BLACK);
+            draw_guards(&mut img.canvas());
+            draw(&mut img.canvas(), pack(id, fps));
+            img
+        };
+        // 0x0FFF -> 0x1000 flips many bits: a hard case for a threshold, not for the fit.
+        let (a, b) = (frame(4095), frame(4096));
+        for w in [0.1f32, 0.45, 0.55, 0.8] {
+            let mut img = a.clone();
+            for (o, (&x, &y)) in img.data.iter_mut().zip(a.data.iter().zip(&b.data)) {
+                *o = (f32::from(x) * (1.0 - w) + f32::from(y) * w).round() as u8;
+            }
+            let cells = sample(&img.view()).unwrap();
+            let fit = fit_blend(&cells, Some(fps), 4090..=4100).unwrap();
+            assert_eq!(fit.first, 4095, "w {w}: {fit:?}");
+            assert!((fit.weight_next - w).abs() < 0.02, "w {w}: {fit:?}");
+        }
+        // A clean frame: all the weight on one frame.
+        let cells = sample(&frame(77).view()).unwrap();
+        let fit = fit_blend(&cells, Some(fps), 70..=80).unwrap();
+        assert_eq!(fit.dominant(), 77);
+        assert!(!fit.is_mixed());
     }
 
     #[test]

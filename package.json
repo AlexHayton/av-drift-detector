@@ -2,7 +2,7 @@
   "name": "av-drift-workspace",
   "private": true,
   "description": "pnpm workspace for av-drift-detector's JavaScript packages (see bindings/node)",
-  "license": "MIT",
+  "license": "BSD-2-Clause-Patent",
   "packageManager": "pnpm@10.6.5",
   "engines": {
     "node": ">=20"

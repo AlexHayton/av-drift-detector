@@ -1,19 +1,25 @@
 //! The visual side of the test pattern: rendering frames and reading stamps back.
 
 pub mod barcode;
+mod blend;
 pub mod canvas;
 mod dancer;
 mod font;
 pub mod layout;
 mod paint;
 pub mod qr;
+#[cfg(feature = "qr-decode")]
+pub mod qr_fit;
+mod reader;
 pub mod timecode;
 
 use serde::Serialize;
 
+pub use self::blend::Blend;
 use self::canvas::{BLACK, GREY, LumaCanvas, LumaImage, LumaView, Rect, WHITE};
 use self::dancer::Dancer;
 pub use self::layout::Layout;
+pub use self::reader::StampReader;
 use self::timecode::Timecode;
 use crate::audio::ToneCode;
 use crate::{FrameRate, Result};
@@ -103,8 +109,19 @@ impl PatternRenderer {
                 .find(|&s| font::text_width(&text, s) <= box_.width())
                 .map(|s| (text, s))
         });
+        let info_scale = fit.as_ref().map_or(1, |f| f.1);
         if let Some((text, scale)) = fit {
             font::draw_text(&mut c, box_.x0, box_.y0, scale, &text, WHITE);
+        }
+        // The project's address along the bottom, no larger than the info line.
+        let link = l.link;
+        let text = link_text();
+        let scale = (1..=(link.height() / font::ROWS).min(info_scale))
+            .rev()
+            .find(|&s| font::text_width(text, s) <= link.width());
+        if let Some(scale) = scale {
+            let y = link.y0 + (link.height() - font::ROWS * scale) / 2;
+            font::draw_text(&mut c, link.x0, y, scale, text, LINK_GREY);
         }
         background
     }
@@ -134,8 +151,22 @@ impl PatternRenderer {
         if let Some(dancer) = &self.dancer {
             dancer.draw(frame_id, canvas);
         }
-        qr::draw(canvas, l.qr, &qr::payload(frame_id, self.fps, &self.tones))
+        let size = (l.width as u32, l.height as u32);
+        qr::draw(
+            canvas,
+            l.qr,
+            &qr::payload(frame_id, self.fps, &self.tones, size),
+        )
     }
+}
+
+/// Grey for the project's address: readable, but quieter than the white text.
+const LINK_GREY: u8 = 150;
+
+/// The project's address as drawn along the bottom of each frame: the QR
+/// code's link without its scheme.
+pub fn link_text() -> &'static str {
+    qr::URL.trim_start_matches("https://")
 }
 
 /// A length in seconds for people, to the millisecond without trailing
@@ -168,14 +199,56 @@ fn progress_slot(layout: &Layout, fps: FrameRate, slot: u32) -> Rect {
 
 /// Which visual element a stamp was read from.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Serialize)]
-#[serde(rename_all = "lowercase")]
+#[serde(rename_all = "snake_case")]
 pub enum StampSource {
     Barcode,
+    /// The QR code, decoded.
     Qr,
+    /// The QR code, read by fitting it as a mix of two consecutive frames'
+    /// codes (see `qr_fit`): a code blended between two frames or too blurred
+    /// to decode, or one tracked from where the last frame had it.
+    QrBlend,
+    /// The barcode, too blended between two frames to pass its CRC, read by
+    /// fitting it as a mix of two frames' words.
+    BarcodeBlend,
+}
+
+impl StampSource {
+    /// Whether the stamp came from the QR code, decoded or fitted.
+    pub fn is_qr(self) -> bool {
+        matches!(self, StampSource::Qr | StampSource::QrBlend)
+    }
+
+    /// The name used in reports: `barcode`, `barcode_blend`, `qr` or `qr_blend`.
+    pub fn name(self) -> &'static str {
+        match self {
+            StampSource::Barcode => "barcode",
+            StampSource::Qr => "qr",
+            StampSource::QrBlend => "qr_blend",
+            StampSource::BarcodeBlend => "barcode_blend",
+        }
+    }
+}
+
+impl std::str::FromStr for StampSource {
+    type Err = crate::Error;
+
+    /// `barcode`, `barcode_blend`, `qr` or `qr_blend`.
+    fn from_str(s: &str) -> crate::Result<Self> {
+        match s {
+            "barcode" => Ok(StampSource::Barcode),
+            "qr" => Ok(StampSource::Qr),
+            "qr_blend" => Ok(StampSource::QrBlend),
+            "barcode_blend" => Ok(StampSource::BarcodeBlend),
+            _ => Err(crate::Error::InvalidOption(format!(
+                "stamp source must be barcode, barcode_blend, qr or qr_blend, not `{s}`"
+            ))),
+        }
+    }
 }
 
 /// A frame stamp decoded from a video frame.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq)]
 pub struct FrameStamp {
     pub frame_id: u32,
     /// The pattern's frame rate, if it has a barcode code (or came from the QR code).
@@ -183,35 +256,71 @@ pub struct FrameStamp {
     /// The audio tone plan's base harmonic (QR codes only).
     pub tone_base_harmonic: Option<u32>,
     pub source: StampSource,
+    /// Where the QR code's corners were, in frame pixels (QR codes only):
+    /// top left, top right, bottom right, bottom left, as printed.
+    pub corners: Option<[(f32, f32); 4]>,
+    /// How the picture mixed two consecutive frames, where that could be
+    /// measured (QR codes read in a sequence of frames).
+    pub blend: Option<Blend>,
 }
 
-/// Reads the frame stamp from a luma frame: the barcode first, then (if
-/// `try_qr` and the `qr-decode` feature is enabled) the QR code.
-pub fn decode_frame(view: &LumaView<'_>, try_qr: bool) -> Option<FrameStamp> {
-    if let Ok(stamp) = barcode::read(view) {
-        return Some(FrameStamp {
-            frame_id: stamp.frame_id,
-            fps: stamp.fps,
-            tone_base_harmonic: None,
-            source: StampSource::Barcode,
-        });
-    }
+impl FrameStamp {
     #[cfg(feature = "qr-decode")]
-    if try_qr && let Some(stamp) = qr::read(view) {
-        return Some(FrameStamp {
-            frame_id: stamp.frame_id,
-            fps: Some(stamp.fps),
-            tone_base_harmonic: stamp.tone_base_harmonic,
+    fn from_qr(found: &qr::LocatedQr) -> Self {
+        FrameStamp {
+            frame_id: found.stamp.frame_id,
+            fps: Some(found.stamp.fps),
+            tone_base_harmonic: Some(found.stamp.tone_base_harmonic),
             source: StampSource::Qr,
-        });
+            corners: Some(found.corners),
+            blend: None,
+        }
     }
-    let _ = try_qr;
-    None
+}
+
+/// Reads the frame stamp from a single luma frame: the barcode first, then
+/// (if `try_qr` and the `qr-decode` feature is enabled) the QR code, searched
+/// for across the whole frame. To read consecutive frames of a capture, a
+/// [`StampReader`] is faster and finds more.
+pub fn decode_frame(view: &LumaView<'_>, try_qr: bool) -> Option<FrameStamp> {
+    StampReader::new(try_qr).read(view, 0.0).stamp
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn frames_show_the_project_address() {
+        assert_eq!(link_text(), "github.com/AlexHayton/av-drift-detector");
+        for (w, h, drawn) in [
+            (1280, 720, true),
+            (1080, 1920, true),
+            (1080, 1080, true),
+            (320, 180, false),
+        ] {
+            let tones = ToneCode::new("30".parse().unwrap(), 48000).unwrap();
+            let renderer = PatternRenderer::new(w, h, tones).unwrap();
+            let mut img = LumaImage::new(w, h, 0);
+            renderer.render(0, &mut img.canvas()).unwrap();
+            let link = renderer.layout().link;
+            let lit = (link.y0.max(0)..link.y1)
+                .flat_map(|y| (link.x0..link.x1).map(move |x| (x as usize, y as usize)))
+                .filter(|&(x, y)| img.view().get(x, y) == LINK_GREY)
+                .count();
+            assert_eq!(lit > 0, drawn, "{w}x{h}: {lit} pixels of the link drawn");
+            // Small: no taller than the info line's text.
+            let rows = (link.y0..link.y1)
+                .filter(|&y| {
+                    (link.x0..link.x1).any(|x| img.view().get(x as usize, y as usize) == LINK_GREY)
+                })
+                .count() as i32;
+            assert!(
+                rows <= renderer.layout().info.height(),
+                "{w}x{h}: {rows} rows"
+            );
+        }
+    }
 
     #[test]
     fn rendered_frames_decode() {

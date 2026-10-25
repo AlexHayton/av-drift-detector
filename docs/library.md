@@ -73,19 +73,18 @@ fn main() -> Result<(), av_drift_detector::Error> {
 ```rust
 use av_drift_detector::analyze::{AnalyzeOptions, analyze_scan};
 use av_drift_detector::media::{AudioTrack, MediaScan, VideoSample};
+use av_drift_detector::pattern::StampReader;
 use av_drift_detector::pattern::canvas::LumaView;
-use av_drift_detector::pattern::decode_frame;
 
 fn measure(frames: &[(f64, Vec<u8>)], width: usize, height: usize, audio: Vec<f32>, audio_start: f64)
     -> Result<av_drift_detector::DriftReport, av_drift_detector::Error>
 {
-    let video = frames
+    // One reader for the whole capture: it remembers where the QR code was.
+    let mut reader = StampReader::new(true);
+    let video: Vec<VideoSample> = frames
         .iter()
-        .map(|(time, luma)| VideoSample {
-            time: *time,
-            // An 8-bit luma (Y) plane; stride == width here.
-            stamp: decode_frame(&LumaView::new(luma, width, height, width), true),
-        })
+        // An 8-bit luma (Y) plane; stride == width here.
+        .map(|(time, luma)| reader.read(&LumaView::new(luma, width, height, width), *time))
         .collect();
     let scan = MediaScan {
         video,
@@ -102,7 +101,7 @@ Timestamps for video and audio must share one clock (seconds). Audio is mono `f3
 
 If your decoder hands over audio in timestamped chunks, `media::AudioTrackBuilder` assembles them into one continuous `AudioTrack` the way `analyze` does: gaps are filled with silence, overlaps dropped, and timestamp rounding ignored.
 
-To read a camera image, `pattern::qr::locate(&view, roi)` returns the QR stamp with the code's corners, and can search just a region (`LumaView::crop` makes one without copying). Searching around where the code was last seen is several times faster than searching the whole frame.
+Read frames in order with one `StampReader`: it looks for the QR code first where it was last seen, at native resolution, which is faster and finds far more codes in camera footage than searching each whole frame. For a single image, `pattern::decode_frame` reads one frame, and `pattern::qr::search(&view, roi)` reports where a QR code is (with its corners), even one that couldn't be decoded.
 
 ## Use the pattern without FFmpeg
 

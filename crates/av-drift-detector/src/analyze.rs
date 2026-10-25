@@ -19,10 +19,13 @@ use std::collections::HashMap;
 use std::path::Path;
 
 use crate::audio::code::ID_MODULUS;
-use crate::audio::{CellDetector, ToneCode};
+use crate::audio::{AudioCell, CellDetector, ToneCode};
+use crate::camera::{DisplayTiming, Observation, display_timing, phase_consistency};
 use crate::media::{AudioTrack, MediaScan};
 use crate::pattern::StampSource;
-use crate::report::{CaptureMode, DriftReport, DriftSummary, FrameDrift, FrameStatus, median};
+use crate::report::{
+    AlternativeReading, CaptureMode, DriftReport, DriftSummary, FrameDrift, FrameStatus, median,
+};
 use crate::{Error, FrameRate, Result};
 
 /// Audio kept either side of the video window, so the first and last frames
@@ -89,38 +92,120 @@ pub(crate) fn scan_window(opts: &AnalyzeOptions) -> Result<crate::media::ScanWin
 
 /// The analysis itself, separated from decoding.
 pub fn analyze_scan(scan: &MediaScan, opts: &AnalyzeOptions, input: String) -> Result<DriftReport> {
+    if scan.video.iter().all(|v| v.stamp.is_none()) && scan.video.iter().any(|v| v.old_format) {
+        return Err(Error::OldFormat);
+    }
     let (fps, fps_source) = pattern_fps(scan, opts.fps)?;
-    let frame_ms = 1000.0 / fps.as_f64();
-    let capture = match opts.capture {
-        CaptureMode::Auto => detect_capture(scan),
-        explicit => explicit,
-    };
-
+    let observations = Observation::from_scan(scan);
     // Readable video frames as (time, frame id), in presentation order.
-    let stamps: Vec<(f64, u32)> = scan
-        .video
-        .iter()
-        .filter_map(|v| v.stamp.map(|s| (v.time, s.frame_id)))
-        .collect();
+    let stamps: Vec<(f64, u32)> = observations.iter().map(|o| (o.time, o.frame)).collect();
 
-    let (audio, audio_outliers) = match &scan.audio {
+    let audio = match &scan.audio {
         Some(track) => decode_audio(track, scan, fps, &stamps)?,
-        None => (Vec::new(), 0),
+        None => DecodedAudio::default(),
     };
 
-    let display = match capture {
-        CaptureMode::Camera => estimate_display_timing(&stamps, fps),
+    let detected = match opts.capture {
+        CaptureMode::Auto => detect_capture(&observations, fps),
+        explicit => Detection {
+            mode: explicit,
+            ambiguous: false,
+        },
+    };
+    let interval = camera_interval(scan);
+    let timing = |mode: CaptureMode| match mode {
+        CaptureMode::Camera => display_timing(&observations, fps, interval),
         _ => None,
     };
+    let display = timing(detected.mode);
+    let frames = measure(scan, detected.mode, display.as_ref(), &audio.points, fps);
 
+    // A capture that could be either a digital copy or a camera locked to the
+    // pattern's rate: report what the other reading would say.
+    let alternative = detected
+        .ambiguous
+        .then(|| {
+            let other = match detected.mode {
+                CaptureMode::Camera => CaptureMode::File,
+                _ => CaptureMode::Camera,
+            };
+            let other_display = timing(other);
+            let other_frames = measure(scan, other, other_display.as_ref(), &audio.points, fps);
+            let mean_ms = DriftSummary::from_frames(&other_frames, 0).mean_ms?;
+            Some(AlternativeReading {
+                capture: other,
+                mean_ms,
+                video_timing_uncertainty_ms: other_display.map(|d| d.uncertainty * 1000.0),
+            })
+        })
+        .flatten();
+
+    let mut summary = DriftSummary::from_frames(&frames, audio.points.len());
+    summary.audio_outliers = audio.outliers;
+    summary.audio_level_dbfs = audio.level_dbfs;
+    summary.audio_snr_db = audio.snr_db;
+    summary.qr_located_unread = scan
+        .video
+        .iter()
+        .filter(|v| v.stamp.is_none() && v.qr_located)
+        .count();
+    summary.qr_blend_frames = scan
+        .video
+        .iter()
+        .filter(|v| v.stamp.is_some_and(|s| s.source == StampSource::QrBlend))
+        .count();
+    summary.mixed_frames = observations
+        .iter()
+        .filter(|o| o.blend.is_some_and(|b| b.is_mixed()))
+        .count();
+    Ok(DriftReport {
+        input,
+        fps,
+        fps_source,
+        capture: detected.mode,
+        video_timing_uncertainty_ms: display.as_ref().map(|d| d.uncertainty * 1000.0),
+        video_timing: display.as_ref().map(|d| d.method.name()),
+        exposure_ms: display
+            .as_ref()
+            .and_then(|d| d.exposure)
+            .map(|e| e * 1000.0),
+        max_exposure_ms: display
+            .as_ref()
+            .and_then(|d| d.max_exposure)
+            .map(|e| e * 1000.0),
+        display_judder: display.as_ref().map_or(0, |d| d.judder),
+        alternative,
+        width: scan.width,
+        height: scan.height,
+        offset: opts.offset,
+        duration: opts.duration,
+        summary,
+        frames,
+    })
+}
+
+/// Drift at every video frame, for a capture of kind `capture` (the display
+/// timeline for camera captures).
+fn measure(
+    scan: &MediaScan,
+    capture: CaptureMode,
+    display: Option<&DisplayTiming>,
+    audio: &[(f64, f64)],
+    fps: FrameRate,
+) -> Vec<FrameDrift> {
+    let frame_ms = 1000.0 / fps.as_f64();
+    let own_offsets: HashMap<usize, f64> = display
+        .map(|d| d.frame_offsets.iter().copied().collect())
+        .unwrap_or_default();
     let mut frames = Vec::with_capacity(scan.video.len());
     let mut previous: Option<u32> = None;
-    for v in &scan.video {
+    for (i, v) in scan.video.iter().enumerate() {
         let mut f = FrameDrift {
             time: v.time,
             video_frame: v.stamp.map(|s| s.frame_id),
             video_position: None,
             stamp_source: v.stamp.map(|s| s.source),
+            video_blend: v.stamp.and_then(|s| s.blend).map(|b| b.weight_next),
             audio_frame: None,
             drift_ms: None,
             dropped_before: 0,
@@ -136,13 +221,17 @@ pub fn analyze_scan(scan: &MediaScan, opts: &AnalyzeOptions, input: String) -> R
                 f.dropped_before = id.saturating_sub(prev).saturating_sub(1);
             }
             previous = Some(id);
-            let position = match &display {
-                Some(d) => (v.time - d.offset) * fps.as_f64(),
+            // A camera frame that caught a switch says when this frame's
+            // switch happened; the others follow the whole timeline.
+            let position = match display {
+                Some(d) => {
+                    (v.time - own_offsets.get(&i).copied().unwrap_or(d.offset)) * fps.as_f64()
+                }
                 None => f64::from(id),
             };
             f.video_position = Some(position);
             // Before source position 0 the test audio is silent, so there is nothing to compare.
-            f.audio_frame = audio_position_at(&audio, v.time, fps).filter(|&a| a >= 0.0);
+            f.audio_frame = audio_position_at(audio, v.time, fps).filter(|&a| a >= 0.0);
             f.status = match f.audio_frame {
                 Some(a) => {
                     f.drift_ms = Some((position - a) * frame_ms);
@@ -153,22 +242,18 @@ pub fn analyze_scan(scan: &MediaScan, opts: &AnalyzeOptions, input: String) -> R
         }
         frames.push(f);
     }
+    frames
+}
 
-    let mut summary = DriftSummary::from_frames(&frames, audio.len());
-    summary.audio_outliers = audio_outliers;
-    Ok(DriftReport {
-        input,
-        fps,
-        fps_source,
-        capture,
-        video_timing_uncertainty_ms: display.map(|d| d.uncertainty * 1000.0),
-        width: scan.width,
-        height: scan.height,
-        offset: opts.offset,
-        duration: opts.duration,
-        summary,
-        frames,
-    })
+/// The capture's typical frame interval, in seconds.
+fn camera_interval(scan: &MediaScan) -> Option<f64> {
+    let gaps: Vec<f64> = scan
+        .video
+        .windows(2)
+        .map(|w| w[1].time - w[0].time)
+        .filter(|&g| g > 0.0)
+        .collect();
+    (!gaps.is_empty()).then(|| median(gaps))
 }
 
 /// The pattern's frame rate: the explicit option, else the most common rate in the stamps.
@@ -186,27 +271,135 @@ fn pattern_fps(scan: &MediaScan, explicit: Option<FrameRate>) -> Result<(FrameRa
         .into_iter()
         .max_by_key(|&((fps, _), n)| (n, fps.num()));
     match best {
-        Some(((fps, StampSource::Barcode), _)) => Ok((fps, "barcode")),
-        Some(((fps, StampSource::Qr), _)) => Ok((fps, "qr")),
+        Some(((fps, StampSource::Barcode | StampSource::BarcodeBlend), _)) => Ok((fps, "barcode")),
+        Some(((fps, _), _)) => Ok((fps, "qr")),
         None => Err(Error::UnknownFrameRate),
     }
 }
 
-/// Camera if most stamps had to come from QR codes (the barcode strip only
-/// reads when the picture is pixel-aligned with the original).
-fn detect_capture(scan: &MediaScan) -> CaptureMode {
-    let (mut barcode, mut qr) = (0, 0);
-    for stamp in scan.video.iter().filter_map(|v| v.stamp) {
-        match stamp.source {
-            StampSource::Barcode => barcode += 1,
-            StampSource::Qr => qr += 1,
+/// How the capture was made, as far as the stamps tell.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct Detection {
+    mode: CaptureMode,
+    /// The stamps fit either a digital copy or a camera locked to the
+    /// pattern's rate.
+    ambiguous: bool,
+}
+
+/// Phase consistency below this means frames were caught at all phases: a
+/// camera, or any capture that samples the screen at its own rate.
+const SAMPLED_BELOW: f64 = 0.9;
+/// A QR code whose corners move more than this (pixels, or this share of a
+/// module if more) over the capture was filmed. A digital copy holds still to
+/// within how precisely corners are found, which varies by up to about a
+/// module between searches at full and half resolution.
+const STATIC_CORNERS_PX: f64 = 2.0;
+const STATIC_CORNERS_MODULES: f64 = 1.0;
+
+/// Whether the capture is a digital copy (each frame timestamped at its
+/// start) or samples the display (a camera, a screen recording at another
+/// rate, a frame-rate converter), from the stamps' timing and geometry:
+///
+/// 1. A copy timestamps every frame at the same point in it, whole frames
+///    apart; a sampling capture catches frames at all phases.
+/// 2. Frames caught mid-switch are a camera's.
+/// 3. With consistent phases and no blends, a QR code that moves was filmed
+///    by a handheld camera; one that stays put is a digital copy, or a
+///    camera on a stand locked to the pattern's rate. That case is ambiguous.
+/// 4. Barcodes only read when the picture is pixel-aligned: a copy.
+fn detect_capture(observations: &[Observation], fps: FrameRate) -> Detection {
+    let camera = |ambiguous| Detection {
+        mode: CaptureMode::Camera,
+        ambiguous,
+    };
+    let file = |ambiguous| Detection {
+        mode: CaptureMode::File,
+        ambiguous,
+    };
+    let qr = observations.iter().filter(|o| o.qr).count();
+    let barcode = observations.len() - qr;
+    if observations.len() < 3 {
+        return if qr > barcode {
+            camera(false)
+        } else {
+            file(false)
+        };
+    }
+    if phase_consistency(observations, fps) < SAMPLED_BELOW {
+        return camera(false);
+    }
+    let mixed = observations
+        .iter()
+        .filter(|o| o.blend.is_some_and(|b| b.is_mixed()))
+        .count();
+    if mixed >= 3 && mixed * 10 >= observations.len() {
+        return camera(false);
+    }
+    if qr <= barcode {
+        return file(false);
+    }
+    match corner_spread(observations) {
+        Some((spread, module))
+            if spread > STATIC_CORNERS_PX.max(STATIC_CORNERS_MODULES * module) =>
+        {
+            camera(false)
         }
+        Some(_) => file(true),
+        // Stamps from elsewhere, without the code's position: most likely filmed.
+        None => camera(true),
     }
-    if qr > barcode {
-        CaptureMode::Camera
-    } else {
-        CaptureMode::File
+}
+
+/// How far the QR code moves: the largest spread (10th to 90th percentile),
+/// over the capture, of any corner coordinate's running median (over nine
+/// frames, so that pixel noise in where the corners are found doesn't count,
+/// but a hand's drift does), in pixels; and the code's typical module size in
+/// pixels. `None` if too few stamps say where the code was.
+fn corner_spread(observations: &[Observation]) -> Option<(f64, f64)> {
+    let corners: Vec<[(f32, f32); 4]> = observations.iter().filter_map(|o| o.corners).collect();
+    if corners.len() < 2 {
+        return None;
     }
+    let spread = (0..8)
+        .map(|k| {
+            let values: Vec<f64> = corners
+                .iter()
+                .map(|c| f64::from(if k % 2 == 0 { c[k / 2].0 } else { c[k / 2].1 }))
+                .collect();
+            let mut smoothed: Vec<f64> = (0..values.len())
+                .map(|i| median(values[i.saturating_sub(4)..(i + 5).min(values.len())].to_vec()))
+                .collect();
+            // The 10th to 90th percentile, not the full range: one stray
+            // search (a far corner found a pixel or two out) shouldn't count
+            // as movement, but a hand's drift across the capture does.
+            smoothed.sort_by(f64::total_cmp);
+            let at = |q: f64| smoothed[((smoothed.len() - 1) as f64 * q).round() as usize];
+            at(0.9) - at(0.1)
+        })
+        .fold(0.0, f64::max);
+    // Version 5 codes are 37 modules; the corners overshoot by one.
+    let module = median(
+        corners
+            .iter()
+            .map(|c| {
+                f64::from(((c[1].0 - c[0].0).powi(2) + (c[1].1 - c[0].1).powi(2)).sqrt()) / 38.0
+            })
+            .collect(),
+    );
+    Some((spread, module))
+}
+
+/// Audio cells decoded into (time, source position in frames), and how
+/// strong the tones were.
+#[derive(Clone, Debug, Default)]
+struct DecodedAudio {
+    points: Vec<(f64, f64)>,
+    /// Cells rejected as timing outliers.
+    outliers: usize,
+    /// Median level of the weakest readable tone, dBFS.
+    level_dbfs: Option<f64>,
+    /// Median signal-to-noise ratio of the weakest readable tone, dB.
+    snr_db: Option<f64>,
 }
 
 /// Decodes the audio cells into (time, source position in frames), with
@@ -217,7 +410,7 @@ fn decode_audio(
     scan: &MediaScan,
     fps: FrameRate,
     stamps: &[(f64, u32)],
-) -> Result<(Vec<(f64, f64)>, usize)> {
+) -> Result<DecodedAudio> {
     // Prefer the tone plan the QR codes describe; else the standard plan for this rate.
     let mut votes: HashMap<u32, usize> = HashMap::new();
     for k in scan
@@ -233,16 +426,25 @@ fn decode_audio(
         .map_or_else(|| ToneCode::default_base_harmonic(fps), |(k, _)| k);
     let detector = CellDetector::new(ToneCode::with_base_harmonic(fps, track.sample_rate, base)?);
 
+    let cells = detector.detect(&track.samples, track.start_time);
     let mut points = Vec::new();
-    for cell in detector.detect(&track.samples, track.start_time) {
+    for cell in &cells {
         let Some(reference) = nearest(stamps, cell.time) else {
             break;
         };
-        let id = unwrap_id(cell.id, reference);
+        let id = unwrap_id(cell.id, cell.modulus, reference);
         points.push((cell.time, id as f64 + cell.residual * fps.as_f64()));
     }
-    let rejected = reject_outliers(&mut points, fps);
-    Ok((points, rejected))
+    let outliers = reject_outliers(&mut points, fps);
+    let typical = |f: &dyn Fn(&AudioCell) -> f64| {
+        (!cells.is_empty()).then(|| median(cells.iter().map(f).collect()))
+    };
+    Ok(DecodedAudio {
+        points,
+        outliers,
+        level_dbfs: typical(&|c| 20.0 * f64::from(c.amplitude.max(1e-9)).log10()),
+        snr_db: typical(&|c| f64::from(c.snr_db)),
+    })
 }
 
 /// Drops cells whose timing disagrees with their neighbours (e.g. the first
@@ -271,48 +473,6 @@ fn reject_outliers(points: &mut Vec<(f64, f64)>, fps: FrameRate) -> usize {
     before - points.len()
 }
 
-/// When the display started showing frame 0 (`offset`), so that frame `N`
-/// is on screen from `offset + N/fps`, plus the half-width of the range of
-/// offsets consistent with what the camera saw.
-#[derive(Clone, Copy, Debug)]
-struct DisplayTiming {
-    offset: f64,
-    uncertainty: f64,
-}
-
-fn estimate_display_timing(stamps: &[(f64, u32)], fps: FrameRate) -> Option<DisplayTiming> {
-    if stamps.is_empty() {
-        return None;
-    }
-    let d = fps.frame_duration();
-    // Seeing frame N at time t means offset ∈ [t − (N+1)/fps, t − N/fps].
-    let mut lower: Vec<f64> = stamps
-        .iter()
-        .map(|&(t, n)| t - (f64::from(n) + 1.0) * d)
-        .collect();
-    let mut upper: Vec<f64> = stamps.iter().map(|&(t, n)| t - f64::from(n) * d).collect();
-    lower.sort_by(f64::total_cmp);
-    upper.sort_by(f64::total_cmp);
-    // Ignore the most extreme 2% on each side (frames caught mid-transition).
-    let trim = stamps.len() / 50;
-    let (lo, hi) = (lower[lower.len() - 1 - trim], upper[trim]);
-    if lo <= hi {
-        return Some(DisplayTiming {
-            offset: (lo + hi) / 2.0,
-            uncertainty: (hi - lo) / 2.0,
-        });
-    }
-    // Inconsistent observations (judder, a stall): use the median mid-frame estimate.
-    let mids: Vec<f64> = stamps
-        .iter()
-        .map(|&(t, n)| t - (f64::from(n) + 0.5) * d)
-        .collect();
-    Some(DisplayTiming {
-        offset: median(mids),
-        uncertainty: d / 2.0,
-    })
-}
-
 /// The frame id of the stamp nearest in time to `t`.
 fn nearest(stamps: &[(f64, u32)], t: f64) -> Option<u32> {
     let i = stamps.partition_point(|s| s.0 < t);
@@ -325,9 +485,10 @@ fn nearest(stamps: &[(f64, u32)], t: f64) -> Option<u32> {
     }
 }
 
-/// Expands a 16-bit audio id to the full frame number closest to `reference`.
-fn unwrap_id(id: u16, reference: u32) -> i64 {
-    let m = i64::from(ID_MODULUS);
+/// Expands an audio id, known modulo `modulus` (65536, or less when a band
+/// was unreadable), to the full frame number closest to `reference`.
+fn unwrap_id(id: u16, modulus: u32, reference: u32) -> i64 {
+    let m = i64::from(modulus.clamp(1, ID_MODULUS));
     let delta = (i64::from(id) - i64::from(reference)).rem_euclid(m);
     let delta = if delta >= m / 2 { delta - m } else { delta };
     i64::from(reference) + delta
@@ -364,11 +525,15 @@ mod tests {
 
     #[test]
     fn unwraps_ids_across_the_16_bit_boundary() {
-        assert_eq!(unwrap_id(5, 5), 5);
-        assert_eq!(unwrap_id(65530, 65540), 65530);
-        assert_eq!(unwrap_id(4, 65530), 65540);
-        assert_eq!(unwrap_id(100, 200_000), 196_708);
-        assert_eq!(unwrap_id(0, 3), 0);
+        let m = ID_MODULUS;
+        assert_eq!(unwrap_id(5, m, 5), 5);
+        assert_eq!(unwrap_id(65530, m, 65540), 65530);
+        assert_eq!(unwrap_id(4, m, 65530), 65540);
+        assert_eq!(unwrap_id(100, m, 200_000), 196_708);
+        assert_eq!(unwrap_id(0, m, 3), 0);
+        // Known only modulo 256 (bands 2 and 3 unreadable): the nearest match.
+        assert_eq!(unwrap_id(0x0034, 256, 0x1230), 0x1234);
+        assert_eq!(unwrap_id(0x00FF, 256, 0x1201), 0x11FF);
     }
 
     fn stamp(n: u32, fps: FrameRate, source: StampSource) -> Option<FrameStamp> {
@@ -377,6 +542,8 @@ mod tests {
             fps: Some(fps),
             tone_base_harmonic: None,
             source,
+            corners: None,
+            blend: None,
         })
     }
 
@@ -395,6 +562,7 @@ mod tests {
             .map(|n| VideoSample {
                 time: fps.frame_time(i64::from(n)),
                 stamp: stamp(n, fps, StampSource::Barcode),
+                ..Default::default()
             })
             .collect();
         let code = ToneCode::new(fps, 48000).unwrap();
@@ -506,7 +674,11 @@ mod tests {
                 let stamp = (shown >= 0.0)
                     .then(|| stamp(shown as u32, fps, StampSource::Qr))
                     .flatten();
-                VideoSample { time: t, stamp }
+                VideoSample {
+                    time: t,
+                    stamp,
+                    ..Default::default()
+                }
             })
             .collect();
         let code = ToneCode::new(fps, 48000).unwrap();

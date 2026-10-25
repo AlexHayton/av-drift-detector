@@ -9,8 +9,8 @@ use ffmpeg_next as ffmpeg;
 
 use super::AudioTrackBuilder;
 pub use super::{AudioTrack, MediaScan, ScanWindow, VideoSample};
+use crate::pattern::StampReader;
 use crate::pattern::canvas::LumaView;
-use crate::pattern::{FrameStamp, decode_frame};
 use crate::{Error, FrameRate, Result};
 
 /// Decodes the video stamps and mono audio in `window`.
@@ -64,7 +64,7 @@ pub fn scan(path: &Path, window: ScanWindow, try_qr: bool) -> Result<MediaScan> 
     let mut video = VideoReader {
         tb: vtb,
         window,
-        try_qr,
+        stamps: StampReader::new(try_qr),
         gray: None,
         samples: Vec::new(),
         done: false,
@@ -96,6 +96,7 @@ pub fn scan(path: &Path, window: ScanWindow, try_qr: bool) -> Result<MediaScan> 
         vdec.send_eof()?;
         video.receive(&mut vdec)?;
     }
+    video.stamps.finish(&mut video.samples);
     if let Some(dec) = adec.as_mut()
         && !audio.done
     {
@@ -123,7 +124,7 @@ fn send(dec: &mut decoder::Opened, packet: &ffmpeg::Packet) -> Result<()> {
 struct VideoReader {
     tb: Rational,
     window: ScanWindow,
-    try_qr: bool,
+    stamps: StampReader,
     /// Lazily created converter for frames whose first plane isn't 8-bit luma.
     gray: Option<(scaling::Context, frame::Video)>,
     samples: Vec<VideoSample>,
@@ -145,17 +146,17 @@ impl VideoReader {
                 self.done = true;
                 continue;
             }
-            let stamp = self.read_stamp(&decoded)?;
-            self.samples.push(VideoSample { time, stamp });
+            let sample = self.read_frame(&decoded, time)?;
+            self.samples.push(sample);
         }
         Ok(())
     }
 
-    fn read_stamp(&mut self, f: &frame::Video) -> Result<Option<FrameStamp>> {
+    fn read_frame(&mut self, f: &frame::Video, time: f64) -> Result<VideoSample> {
         let (w, h) = (f.width() as usize, f.height() as usize);
         if has_luma_plane(f.format()) {
             let view = LumaView::new(f.data(0), w, h, f.stride(0));
-            return Ok(decode_frame(&view, self.try_qr));
+            return Ok(self.stamps.read(&view, time));
         }
         let stale = self.gray.as_ref().is_none_or(|(ctx, out)| {
             ctx.input().format != f.format()
@@ -177,7 +178,7 @@ impl VideoReader {
         let (ctx, out) = self.gray.as_mut().expect("scaler");
         ctx.run(f, out)?;
         let view = LumaView::new(out.data(0), w, h, out.stride(0));
-        Ok(decode_frame(&view, self.try_qr))
+        Ok(self.stamps.read(&view, time))
     }
 }
 

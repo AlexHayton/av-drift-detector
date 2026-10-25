@@ -779,6 +779,7 @@ function __napiStampBindingTarget(exportsObject, target) {
 module.exports.__napiBindingTarget = __napiStampBindingTarget(nativeBinding, __napiLoadedBindingTarget)
 module.exports = nativeBinding
 module.exports.PatternRenderer = nativeBinding.PatternRenderer
+module.exports.StampReader = nativeBinding.StampReader
 module.exports.analyze = nativeBinding.analyze
 module.exports.analyzeFrames = nativeBinding.analyzeFrames
 module.exports.generate = nativeBinding.generate
