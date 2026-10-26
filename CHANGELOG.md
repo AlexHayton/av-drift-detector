@@ -4,6 +4,12 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.6.1] - 2026-10-26
+
+### Fixed
+
+- 0.6.0 was tagged but never published: its release stopped when a new test of the Node.js and Python packages failed on FFmpeg 6.1. The test wrote MKV files, whose timestamps are rounded to the millisecond. This release publishes everything listed under 0.6.0. It's also the first npm release since 0.2.1, so the Node.js package gains everything listed under 0.3.0 to 0.6.0.
+
 ## [0.6.0] - 2026-10-26
 
 ### Fixed
@@ -97,7 +103,8 @@ First release.
 - Text, JSON and CSV reports, analysis windows (`--offset`, `--duration`), and `--max-drift` for use in CI.
 - The `av_drift_detector` library, with FFmpeg-free pattern rendering, audio synthesis and audio detection.
 
-[Unreleased]: https://github.com/AlexHayton/av-drift-detector/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/AlexHayton/av-drift-detector/compare/v0.6.1...HEAD
+[0.6.1]: https://github.com/AlexHayton/av-drift-detector/compare/v0.6.0...v0.6.1
 [0.6.0]: https://github.com/AlexHayton/av-drift-detector/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/AlexHayton/av-drift-detector/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/AlexHayton/av-drift-detector/compare/v0.3.0...v0.4.0
