@@ -11,23 +11,25 @@ av-drift analyze phone-video.mov
 ```text
 Pattern  30 fps (from qr), 1280x720
 Window   0.000s - 11.940s, 297 frames
-Capture  camera; display timing from 237 frames caught mid-switch, known to ±1.99 ms
-         (exposure measured at 33.2 ms)
-Drift    mean +40.09 ms  median +40.09 ms  min +39.83 ms  max +40.30 ms  stddev 0.07 ms
+Capture  camera; display timing from 237 frames caught mid-switch, known to ±1.98 ms
+         (exposure measured at 33.1 ms)
+         (tone curve measured at gamma 2.2)
+Drift    mean +40.14 ms  median +40.14 ms  min +39.85 ms  max +40.40 ms  stddev 0.09 ms
          = +1.20 frames at 30 fps (positive = audio late)
+Skew     -0.006 ms/min (-0.1 ppm)
 Frames   297 measured, 0 unreadable, 0 without audio, 0 dropped, 0 repeated
-QR       25 decoded, 272 read by fitting, 0 found but unreadable
+QR       14 decoded, 283 read by fitting, 0 found but unreadable
 Audio    358 frame cells decoded; tones at -22 dBFS, 108 dB above the noise
 ```
 
-(Output from `scripts/stress.py`'s simulated camera: 25 fps, 1/30 s exposures, keystoned, soft and noisy, filming a 30 fps pattern whose audio is 40 ms late.)
+(Output from `scripts/stress.py`'s simulated camera: 25 fps, 1/30 s exposures, a phone-like tone curve, keystoned, soft and noisy, filming a 30 fps pattern whose audio is 40 ms late.)
 
 ## How camera captures differ
 
 In a digital copy, every video frame is pixel-aligned with the original and timestamped when it starts. A camera breaks both assumptions, and the analyzer handles each:
 
 - **The picture is at an angle, scaled, blurred and noisy.** The barcode strip can't be found where it would be in a copy, so frames are read from the **QR code**, which can be located anywhere in the image. The QR code carries everything else needed: the frame number, the exact frame rate, the audio tone plan and the test file's frame size. You don't have to tell the analyzer anything. (Scanned with an ordinary camera app, the same code opens the project's page.) Once a code has been read, the analyzer follows it from frame to frame, and the frame size tells it where the barcode strip is too, for frames whose code is too blurred or glared to read.
-- **The camera's exposures blend frames.** Indoors, a phone often exposes each picture for most of a frame, so many pictures catch the screen switching from one frame to the next: every square of the QR code that differs between the two frames comes out grey, too many for an ordinary QR reader. The analyzer reads these anyway, by fitting each picture as a mix of two frames' codes, and the mix is useful: it says how far through the switch the picture was taken.
+- **The camera's exposures blend frames.** Indoors, a phone often exposes each picture for most of a frame, so many pictures catch the screen switching from one frame to the next: every square of the QR code that differs between the two frames comes out grey, too many for an ordinary QR reader. The analyzer reads these anyway, by fitting each picture as a mix of two frames' codes, and the mix is useful: it says how far through the switch the picture was taken. The frames mix in light, but a camera records brightness through a tone curve (about light to the power 1/2.2), so the fit measures the curve too and reports it as **tone curve measured at gamma x**.
 - **The camera samples the display at arbitrary moments.** A picture that shows frame N was taken at some unknown point while N was on screen. Pictures caught mid-switch pin down exactly when the display switched, so the analyzer recovers the display's timeline from them, to a millisecond or two. When few pictures are blended (a short exposure), every picture still bounds when the display switched frames, and intersecting those bounds over all the frames narrows the timeline too. Either way, the report says how tight it is as **display timing known to ±x ms**.
 - **The sound crosses a room.** Echoes, background noise, a quiet recording, a speaker that can't play some of the tones, even an inverted microphone: the audio detector handles all of these (see [How it works](how-it-works.md)).
 

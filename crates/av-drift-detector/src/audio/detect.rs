@@ -32,6 +32,8 @@
 use std::collections::HashSet;
 use std::f64::consts::TAU;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicUsize, Ordering};
+use std::thread;
 
 use rustfft::num_complex::Complex;
 use rustfft::{Fft, FftPlanner};
@@ -193,7 +195,16 @@ impl CellDetector {
 
     /// Finds every decodable frame cell in `samples`, whose first sample is at
     /// container time `start_time`. Cells are returned in time order.
+    ///
+    /// Blocks are read independently, so they're spread across the available cores.
     pub fn detect(&self, samples: &[f32], start_time: f64) -> Vec<AudioCell> {
+        let threads = thread::available_parallelism().map_or(1, |n| n.get());
+        self.detect_with(samples, start_time, threads)
+    }
+
+    /// [`detect`](Self::detect) on up to `threads` threads. The result doesn't
+    /// depend on the thread count.
+    fn detect_with(&self, samples: &[f32], start_time: f64, threads: usize) -> Vec<AudioCell> {
         let spf = self.code.samples_per_frame();
         let hop = (self.window / 16).max(1) as f64;
         let len = samples.len() as f64;
@@ -210,11 +221,11 @@ impl CellDetector {
         {
             starts.push(len - span);
         }
-        let mut cells = Vec::new();
-        for q in starts {
+        let blocks = map_in_parallel(&starts, threads, |&q| {
             let phi = self.align_block(samples, q, hop);
-            cells.extend(self.decode_block(samples, q + phi, start_time));
-        }
+            self.decode_block(samples, q + phi, start_time)
+        });
+        let mut cells: Vec<AudioCell> = blocks.into_iter().flatten().collect();
         dedup_cells(&mut cells, spf / 2.0);
         cells
     }
@@ -603,6 +614,45 @@ fn dedup_cells(cells: &mut Vec<AudioCell>, min_gap: f64) {
     *cells = out;
 }
 
+/// Blocks per thread below which another thread isn't worth starting.
+const MIN_BLOCKS_PER_THREAD: usize = 4;
+
+/// `items.iter().map(f)` on up to `threads` threads, which take the next
+/// item as they finish one. Results are in the order of `items`.
+fn map_in_parallel<T: Sync, R: Send>(
+    items: &[T],
+    threads: usize,
+    f: impl Fn(&T) -> R + Sync,
+) -> Vec<R> {
+    let threads = threads.min(items.len() / MIN_BLOCKS_PER_THREAD);
+    if threads <= 1 {
+        return items.iter().map(f).collect();
+    }
+    let next = AtomicUsize::new(0);
+    let mut done: Vec<(usize, R)> = thread::scope(|scope| {
+        let workers: Vec<_> = (0..threads)
+            .map(|_| {
+                scope.spawn(|| {
+                    let mut out = Vec::new();
+                    loop {
+                        let i = next.fetch_add(1, Ordering::Relaxed);
+                        let Some(item) = items.get(i) else {
+                            break out;
+                        };
+                        out.push((i, f(item)));
+                    }
+                })
+            })
+            .collect();
+        workers
+            .into_iter()
+            .flat_map(|w| w.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
+            .collect()
+    });
+    done.sort_unstable_by_key(|&(i, _)| i);
+    done.into_iter().map(|(_, r)| r).collect()
+}
+
 /// `(Σ x·c, Σ x·s)` with eight independent accumulators so the loop vectorises.
 fn dot2(x: &[f32], c: &[f32], s: &[f32]) -> (f32, f32) {
     let (mut ac, mut as_) = ([0.0f32; 8], [0.0f32; 8]);
@@ -712,6 +762,38 @@ mod tests {
                 error * 1e6
             );
         }
+    }
+
+    #[test]
+    fn threads_dont_change_the_result() {
+        let fps: FrameRate = "29.97".parse().unwrap();
+        let code = ToneCode::new(fps, 48000).unwrap();
+        let mut samples = synthesize(&code, 0.0123, 0, 48000 * 6);
+        // A dropout, so some blocks find nothing and finish early.
+        samples[48000..60000].fill(0.0);
+        let mut seed = 777u32;
+        for s in samples.iter_mut() {
+            seed = seed.wrapping_mul(1_103_515_245).wrapping_add(12345);
+            *s += 0.01 * ((seed >> 16) as f32 / 32768.0 - 1.0);
+        }
+        let detector = CellDetector::new(code);
+        let one = detector.detect_with(&samples, 3.0, 1);
+        assert!(one.len() > 150, "only {} cells", one.len());
+        for threads in [2, 3, 8, 64] {
+            assert_eq!(detector.detect_with(&samples, 3.0, threads), one);
+        }
+    }
+
+    #[test]
+    fn parallel_map_keeps_order() {
+        let items: Vec<u64> = (0..100).collect();
+        // Uneven work, so threads finish out of order.
+        let slow = |&i: &u64| (0..(i % 7) * 20_000).fold(i, |a, b| a ^ b.wrapping_mul(31)) ^ i;
+        let expected: Vec<u64> = items.iter().map(slow).collect();
+        for threads in [1, 4, 16] {
+            assert_eq!(map_in_parallel(&items, threads, slow), expected);
+        }
+        assert!(map_in_parallel(&[] as &[u64], 8, slow).is_empty());
     }
 
     #[test]

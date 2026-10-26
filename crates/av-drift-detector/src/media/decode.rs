@@ -182,7 +182,8 @@ impl VideoReader {
     }
 }
 
-/// Pixel formats whose first plane is already 8-bit luma.
+/// Pixel formats whose first plane is already 8-bit luma. `ffmpeg_cli`'s
+/// `VIDEO_FILTERS` lets the same ones through, so both paths read the same pixels.
 fn has_luma_plane(format: Pixel) -> bool {
     matches!(
         format,

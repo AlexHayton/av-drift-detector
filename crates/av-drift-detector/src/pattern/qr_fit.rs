@@ -6,20 +6,22 @@
 //! correction can fix. But once one frame has been decoded, the payload's
 //! format is known, so the code of every frame can be rendered exactly.
 //! Fitting the sampled module brightness as a mix of two consecutive frames'
-//! codes, `s ≈ Q(M) + β·(Q(M+1) − Q(M))`, identifies the frames and measures
-//! `β`, the share of the exposure that came after the switch. That share is
-//! sub-frame timing that frame numbers alone can't give: a camera locked to
-//! the pattern's rate sees the same frame numbers at every phase, but not the
-//! same `β`.
+//! codes, `s ≈ (Q(M) + β·(Q(M+1) − Q(M)))^(1/γ)`, identifies the frames and
+//! measures `β`, the share of the exposure that came after the switch. That
+//! share is sub-frame timing that frame numbers alone can't give: a camera
+//! locked to the pattern's rate sees the same frame numbers at every phase,
+//! but not the same `β`. The frames mix in light, and `γ` allows for the
+//! camera's tone curve (see `pattern::blend`).
 //!
 //! A rolling shutter exposes the code's rows at slightly different times, so
 //! `β` is allowed to vary linearly from the code's top row to its bottom row.
 
 use std::collections::HashMap;
 
+use super::blend::{self, Cells};
 use super::canvas::LumaView;
 use super::qr::{QrGrid, QrStamp};
-use super::{Blend, Layout, barcode};
+use super::{Blend, Layout, ToneCurve, barcode};
 use crate::Result;
 
 /// The black and white levels must differ by at least this much (out of 255).
@@ -145,7 +147,8 @@ impl QrTemplate {
     }
 
     /// Reads the barcode strip through the code found at `grid`, as a blend
-    /// of two consecutive frames' words (the earlier one in `candidates`).
+    /// of two consecutive frames' words (the earlier one in `candidates`),
+    /// seen through the tone curve `tone` (see [`barcode::fit_blend`]).
     /// Its cells are several times larger than the code's modules, so it can
     /// read when the code is too small or blurred to fit.
     pub fn fit_barcode(
@@ -153,24 +156,28 @@ impl QrTemplate {
         view: &LumaView<'_>,
         grid: &QrGrid,
         candidates: std::ops::RangeInclusive<u32>,
+        tone: &mut ToneCurve,
     ) -> Option<Blend> {
         let map = self.frame_to_picture(grid)?;
         let (w, h) = self.stamp.frame_size;
         let size = (f64::from(w), f64::from(h));
         let cells = barcode::sample_mapped(view, size, map.scale, |x, y| Some(map.map(x, y)))?;
-        barcode::fit_blend(&cells, Some(self.stamp.fps), candidates)
+        barcode::fit_blend(&cells, Some(self.stamp.fps), candidates, tone)
     }
 
     /// Fits the code in `grid` as a blend of two consecutive frames, the
-    /// earlier one in `candidates`.
+    /// earlier one in `candidates`, seen through a tone curve: the code's
+    /// own where it shows it, else the capture's so far from `tone`, which
+    /// learns from the fit.
     pub fn fit(
         &mut self,
         view: &LumaView<'_>,
         grid: &QrGrid,
         candidates: std::ops::RangeInclusive<u32>,
+        tone: &mut ToneCurve,
     ) -> Option<Blend> {
         let raw = ModuleSamples::take(view, grid)?;
-        self.fit_samples(&raw, candidates)
+        self.fit_samples(&raw, candidates, tone)
     }
 
     /// [`fit`](Self::fit) for module brightness sampled earlier.
@@ -178,24 +185,29 @@ impl QrTemplate {
         &mut self,
         raw: &ModuleSamples,
         candidates: std::ops::RangeInclusive<u32>,
+        tone: &mut ToneCurve,
     ) -> Option<Blend> {
         if raw.size != self.size {
             return None;
         }
         let samples = self.normalise(raw)?;
         let n = self.size;
-        let mut fits: Vec<Blend> = Vec::new();
-        for m in candidates {
+        // The modules that can change between frames, row by row; the fixed
+        // ones calibrated black and white.
+        let cells = |m: u32| -> Option<Cells> {
+            let next = m.checked_add(1)?;
             let qa = self.modules(m).to_vec();
-            let qb = self.modules(m.checked_add(1)?).to_vec();
+            let qb = self.modules(next);
             if qa.len() != n * n || qb.len() != n * n {
-                continue;
+                return None;
             }
-            fits.push(fit_pair(&samples, &qa, &qb, n, m, |x, y| {
-                !is_fixed(x, y, n)
-            })?);
-        }
-        super::blend::choose(&fits)
+            let mut cells = Cells::new(n);
+            for i in (0..n * n).filter(|&i| !is_fixed(i % n, i / n, n) && samples[i].is_finite()) {
+                cells.add(i / n, samples[i], qa[i] > 0.5, qb[i] > 0.5);
+            }
+            Some(cells)
+        };
+        blend::fit_candidates(candidates, cells, true, tone)
     }
 
     /// Module brightness normalised so that black is 0 and white is 1, using
@@ -241,23 +253,36 @@ fn normalise(samples: &ModuleSamples, fixed: &[(usize, f32)]) -> Option<Vec<f32>
     }
 }
 
-/// Decodes a code from its sampled modules, thresholded midway between the
-/// levels of the modules that never change. A picture caught between two
-/// frames has four levels (black, white, and the two mixes), and the
-/// threshold sorts the mixes by whichever frame covered more of the exposure:
-/// that frame's code, exactly. A detector that thresholds pixels against
-/// their surroundings, as most QR readers do, mangles them instead.
-pub fn decode_samples(samples: &ModuleSamples) -> Option<QrStamp> {
+/// Decodes a code from its sampled modules, thresholded between the levels
+/// of the modules that never change: midway in light, through the tone curve
+/// `gamma` (1 if it isn't known). A picture caught between two frames has
+/// four levels (black, white, and the two mixes), and the threshold sorts the
+/// mixes by whichever frame covered more of the exposure: that frame's code,
+/// exactly. A detector that thresholds pixels against their surroundings, as
+/// most QR readers do, mangles them instead.
+pub fn decode_samples(samples: &ModuleSamples, gamma: f32) -> Option<QrStamp> {
     let n = samples.size;
     let s = normalise(samples, &fixed_modules(n))?;
-    // Midway first; then a little either side, for uneven light or a mix near half.
-    [0.5f32, 0.42, 0.58, 0.35, 0.65]
-        .into_iter()
-        .find_map(|threshold| {
-            let grid = rqrr::SimpleGrid::from_func(n, |x, y| s[y * n + x] < threshold);
-            let (_, text) = rqrr::Grid::new(grid).decode().ok()?;
-            super::qr::parse_payload(&text)
-        })
+    // Midway first; then a little either side, for uneven light or a mix near
+    // half; then midway for typical cameras' curves, for when `gamma` isn't
+    // known yet (a camera's mixes near half both read about 0.7).
+    let mid = 0.5f32.powf(1.0 / gamma.max(0.1));
+    [
+        mid,
+        mid - 0.08,
+        mid + 0.08,
+        mid - 0.15,
+        mid + 0.15,
+        0.73,
+        0.68,
+        0.78,
+    ]
+    .into_iter()
+    .find_map(|threshold| {
+        let grid = rqrr::SimpleGrid::from_func(n, |x, y| s[y * n + x] < threshold);
+        let (_, text) = rqrr::Grid::new(grid).decode().ok()?;
+        super::qr::parse_payload(&text)
+    })
 }
 
 /// The modules that are the same in every code of `n` modules per side, and
@@ -283,56 +308,6 @@ fn fixed_modules(n: usize) -> Vec<(usize, f32)> {
             (i, if dark { 0.0 } else { 1.0 })
         })
         .collect()
-}
-
-/// Least squares for `s ≈ qa + β(y)·(qb − qa)` with `β(y) = β₀ + β₁·(y − ½)`
-/// over the modules `use_module` allows, `y` running from 0 (top row) to 1.
-fn fit_pair(
-    s: &[f32],
-    qa: &[f32],
-    qb: &[f32],
-    n: usize,
-    m: u32,
-    use_module: impl Fn(usize, usize) -> bool,
-) -> Option<Blend> {
-    let row = |i: usize| ((i / n) as f64 + 0.5) / n as f64 - 0.5;
-    let usable = |i: usize| use_module(i % n, i / n) && s[i].is_finite();
-    let (mut s00, mut s01, mut s11, mut r0, mut r1) = (0.0f64, 0.0, 0.0, 0.0, 0.0);
-    for i in (0..n * n).filter(|&i| usable(i)) {
-        let d = f64::from(qb[i] - qa[i]);
-        if d == 0.0 {
-            continue;
-        }
-        let (x0, x1) = (d, d * row(i));
-        let r = f64::from(s[i] - qa[i]);
-        s00 += x0 * x0;
-        s01 += x0 * x1;
-        s11 += x1 * x1;
-        r0 += x0 * r;
-        r1 += x1 * r;
-    }
-    let det = s00 * s11 - s01 * s01;
-    let (b0, b1) = if det.abs() > 1e-9 {
-        ((r0 * s11 - r1 * s01) / det, (s00 * r1 - s01 * r0) / det)
-    } else if s00 > 0.0 {
-        (r0 / s00, 0.0)
-    } else {
-        (0.0, 0.0)
-    };
-    let (mut sq, mut count) = (0.0f64, 0usize);
-    for i in (0..n * n).filter(|&i| usable(i)) {
-        let beta = (b0 + b1 * row(i)).clamp(0.0, 1.0);
-        let predicted = f64::from(qa[i]) + beta * f64::from(qb[i] - qa[i]);
-        sq += (f64::from(s[i]) - predicted).powi(2);
-        count += 1;
-    }
-    (count > 0).then(|| Blend {
-        first: m,
-        weight_next: b0.clamp(0.0, 1.0) as f32,
-        slope: b1 as f32,
-        rms: (sq / count as f64).sqrt() as f32,
-        margin: 0.0,
-    })
 }
 
 /// The code for frame `id` of `template`'s file: its size and modules (1.0 light).
@@ -511,17 +486,24 @@ mod tests {
         let found = qr::locate(&clean.view(), None).unwrap();
         let mut template = QrTemplate::new(&found.stamp).unwrap();
         let grid = found.grid();
+        let mut tone = ToneCurve::default();
         // An unmixed frame: either neighbouring pair, all the weight on 500.
-        let fit = template.fit(&clean.view(), &grid, 495..=505).unwrap();
+        let fit = template
+            .fit(&clean.view(), &grid, 495..=505, &mut tone)
+            .unwrap();
         assert_eq!(fit.dominant(), 500);
         assert!(!fit.is_mixed(), "{fit:?}");
         for w in [0.2f32, 0.5, 0.7] {
             let img = mix(&frame(&renderer, 700), &frame(&renderer, 701), w);
-            let fit = template.fit(&img.view(), &grid, 695..=705).unwrap();
+            let fit = template
+                .fit(&img.view(), &grid, 695..=705, &mut tone)
+                .unwrap();
             assert_eq!(fit.first, 700, "w {w}: {fit:?}");
             assert!((fit.weight_next - w).abs() < 0.02, "w {w}: {fit:?}");
             assert!(fit.slope.abs() < 0.02, "w {w}: {fit:?}");
         }
+        // Mixed in proportion to light, as a digital copy mixes.
+        assert!((tone.gamma() - 1.0).abs() < 0.05, "gamma {}", tone.gamma());
         // A rolling shutter: the bottom of the code is later than the top.
         let a = frame(&renderer, 900);
         let b = frame(&renderer, 901);
@@ -536,7 +518,62 @@ mod tests {
                     (f32::from(a.data[i]) * (1.0 - w) + f32::from(b.data[i]) * w).round() as u8;
             }
         }
-        let fit = template.fit(&img.view(), &grid, 895..=905).unwrap();
+        let fit = template
+            .fit(&img.view(), &grid, 895..=905, &mut tone)
+            .unwrap();
+        assert_eq!(fit.first, 900);
+        assert!((fit.weight_next - 0.5).abs() < 0.03, "{fit:?}");
+        assert!((fit.slope - 0.4).abs() < 0.06, "{fit:?}");
+    }
+
+    #[test]
+    fn reads_blends_through_a_camera_tone_curve() {
+        use crate::pattern::blend::curves::{Curve, encode, gamma22, light, mix_through, srgb};
+        let fps: FrameRate = "30".parse().unwrap();
+        let renderer = PatternRenderer::new(1280, 720, ToneCode::new(fps, 48000).unwrap()).unwrap();
+        let found = qr::locate(&frame(&renderer, 500).view(), None).unwrap();
+        let mut template = QrTemplate::new(&found.stamp).unwrap();
+        let grid = found.grid();
+        let curves: [(&str, Curve); 2] = [("sRGB", srgb), ("gamma 2.2", gamma22)];
+        let (a, b) = (frame(&renderer, 700), frame(&renderer, 701));
+        for (name, curve) in curves {
+            // Mixes near either frame don't show the curve: they're read with
+            // what the mixes nearer half measured.
+            let mut tone = ToneCurve::default();
+            for w in [0.3, 0.5, 0.7, 0.1, 0.9] {
+                let img = mix_through(&a, &b, w, curve);
+                let fit = template
+                    .fit(&img.view(), &grid, 695..=705, &mut tone)
+                    .unwrap();
+                assert_eq!(fit.first, 700, "{name} w {w}: {fit:?}");
+                assert!(
+                    (f64::from(fit.weight_next) - w).abs() < 0.02,
+                    "{name} w {w}: {fit:?}"
+                );
+                assert!(fit.slope.abs() < 0.03, "{name} w {w}: {fit:?}");
+                assert!(fit.rms < 0.03, "{name} w {w}: {fit:?}");
+            }
+            let gamma = tone.gamma();
+            assert!((1.9..2.6).contains(&gamma), "{name}: gamma {gamma}");
+        }
+        // A rolling shutter through sRGB: the bottom of the code is later.
+        let (a, b) = (frame(&renderer, 900), frame(&renderer, 901));
+        let mut img = a.clone();
+        let b_box = grid.bounds();
+        for y in 0..720 {
+            let t = ((y as f64 - b_box.y0 as f64) / b_box.height() as f64).clamp(0.0, 1.0);
+            let w = 0.3 + 0.4 * t;
+            for x in 0..1280 {
+                let i = y * 1280 + x;
+                let mixed =
+                    light(f64::from(a.data[i])) * (1.0 - w) + light(f64::from(b.data[i])) * w;
+                img.data[i] = encode(mixed, srgb);
+            }
+        }
+        let mut tone = ToneCurve::default();
+        let fit = template
+            .fit(&img.view(), &grid, 895..=905, &mut tone)
+            .unwrap();
         assert_eq!(fit.first, 900);
         assert!((fit.weight_next - 0.5).abs() < 0.03, "{fit:?}");
         assert!((fit.slope - 0.4).abs() < 0.06, "{fit:?}");
@@ -549,11 +586,18 @@ mod tests {
         let img = frame(&renderer, 300);
         let found = qr::locate(&img.view(), None).unwrap();
         let mut template = QrTemplate::new(&found.stamp).unwrap();
+        let mut tone = ToneCurve::default();
         // The true frame isn't a candidate.
-        assert_eq!(template.fit(&img.view(), &found.grid(), 100..=110), None);
+        assert_eq!(
+            template.fit(&img.view(), &found.grid(), 100..=110, &mut tone),
+            None
+        );
         // A blank picture where the code was.
         let blank = LumaImage::new(1280, 720, 128);
-        assert_eq!(template.fit(&blank.view(), &found.grid(), 295..=305), None);
+        assert_eq!(
+            template.fit(&blank.view(), &found.grid(), 295..=305, &mut tone),
+            None
+        );
     }
 
     #[test]
@@ -587,7 +631,12 @@ mod tests {
         );
         assert!((map.scale - 0.5).abs() < 0.02, "{}", map.scale);
         let fit = template
-            .fit_barcode(&picture.view(), &found.grid(), 295..=305)
+            .fit_barcode(
+                &picture.view(),
+                &found.grid(),
+                295..=305,
+                &mut ToneCurve::default(),
+            )
             .unwrap();
         assert_eq!(fit.first, 300, "{fit:?}");
         assert!((fit.weight_next - 0.35).abs() < 0.03, "{fit:?}");
@@ -627,8 +676,18 @@ mod tests {
             let img = mix(&frame(&renderer, 600), &frame(&renderer, 601), w);
             // Most QR readers give up on a picture this blended.
             let samples = ModuleSamples::take(&img.view(), &grid).unwrap();
-            let stamp = decode_samples(&samples).unwrap();
+            let stamp = decode_samples(&samples, 1.0).unwrap();
             assert_eq!(stamp.frame_id, expected, "w {w}");
+        }
+        // Through a camera's curve, both mixes near half read brighter than half.
+        use crate::pattern::blend::curves::{mix_through, srgb};
+        for (w, expected) in [(0.45, 600), (0.55, 601), (0.3, 600)] {
+            let img = mix_through(&frame(&renderer, 600), &frame(&renderer, 601), w, srgb);
+            let samples = ModuleSamples::take(&img.view(), &grid).unwrap();
+            for gamma in [1.0, 2.2] {
+                let stamp = decode_samples(&samples, gamma).unwrap();
+                assert_eq!(stamp.frame_id, expected, "w {w} gamma {gamma}");
+            }
         }
     }
 

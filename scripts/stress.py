@@ -74,6 +74,9 @@ SCENE = (
     "testsrc2=s=1920x1080:r=30:d=12[bg];[bg][p]overlay=x=900:y=250:shortest=1"
 )
 HANDHELD = f"{KEYSTONE},gblur=sigma=1.2,noise=alls=12:allf=t"
+# A camera's tone curve, after the exposure has mixed the frames in light:
+# brightness is light to the power 1/2.2, as phones roughly record it.
+GAMMA = "lutyuv=y='16+219*pow(clip((val-16)/219\\,0\\,1)\\,1/2.2)'"
 
 CASES = [
     # Digital copies: frames timestamped when they start, however mangled.
@@ -103,6 +106,11 @@ CASES = [
     Case("camera.30fps-33ms-phase3", camera(30, 10, 3), honest=True),
     Case("camera.30fps-33ms-phase7", camera(30, 10, 7), honest=True),
     Case("camera.30fps-33ms-handheld", camera(30, 10, 2, HANDHELD), honest=True),
+    # Through a tone curve, which the blend fits measure.
+    Case("camera.25fps-33ms-gamma", camera(25, 10, 0, GAMMA), within=1.0),
+    Case("camera.25fps-33ms-handheld-gamma", camera(25, 10, 0, f"{GAMMA},{HANDHELD}"), within=1.0),
+    Case("camera.25fps-13ms-handheld-gamma", camera(25, 4, 0, f"{GAMMA},{HANDHELD}"), honest=True),
+    Case("camera.30fps-33ms-phase3-gamma", camera(30, 10, 3, GAMMA), honest=True),
     # Audio.
     Case("audio.delay+100ms", audio="adelay=delays=100:all=1", truth=TRUTH + 100),
     Case("audio.early-100ms", audio="atrim=start=0.1,asetpts=PTS-STARTPTS", truth=TRUTH - 100),

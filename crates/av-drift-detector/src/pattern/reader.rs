@@ -5,7 +5,7 @@ use super::canvas::LumaView;
 use super::qr::{self, QrGrid, QrStamp};
 #[cfg(feature = "qr-decode")]
 use super::qr_fit::{ModuleSamples, QrTemplate, decode_samples};
-use super::{FrameStamp, StampSource, barcode};
+use super::{FrameStamp, StampSource, ToneCurve, barcode};
 use crate::FrameRate;
 use crate::media::VideoSample;
 
@@ -45,7 +45,9 @@ const MAX_PENDING: usize = 2000;
 /// as a blend of two consecutive frames (see `pattern::qr_fit`). That
 /// reads codes a camera caught mid-switch, which don't decode, and measures
 /// how far through the switch each picture was taken. Codes found before
-/// that are kept, and [`finish`](Self::finish) reads them at the end.
+/// that are kept, and [`finish`](Self::finish) reads them at the end. The
+/// fits learn the camera's tone curve as they go, and use it for pictures
+/// that don't show it themselves.
 #[derive(Clone, Debug, Default)]
 pub struct StampReader {
     #[cfg_attr(not(feature = "qr-decode"), allow(dead_code))]
@@ -65,6 +67,8 @@ pub struct StampReader {
     /// The rate the barcode carries (`Some(None)` for a rate without a code),
     /// once a barcode has been read.
     barcode_fps: Option<Option<FrameRate>>,
+    /// What the blend fits have shown of the camera's tone curve.
+    tone: ToneCurve,
     /// Codes found but not yet identified: frame index, time, grid, samples.
     #[cfg(feature = "qr-decode")]
     pending: Vec<(usize, f64, QrGrid, ModuleSamples)>,
@@ -140,7 +144,7 @@ impl StampReader {
                 };
                 let candidates =
                     predicted.saturating_sub(SEARCH_FRAMES)..=predicted + SEARCH_FRAMES;
-                if let Some(blend) = template.fit_samples(&raw, candidates) {
+                if let Some(blend) = template.fit_samples(&raw, candidates, &mut self.tone) {
                     samples[index].stamp = Some(blend_stamp(template, &grid, blend));
                 }
             }
@@ -181,7 +185,12 @@ impl StampReader {
                 self.seed_from_barcode(id, read.fps, (view.width() as u32, view.height() as u32));
                 let blend = barcode::sample(view)
                     .and_then(|cells| {
-                        barcode::fit_blend(&cells, read.fps, id.saturating_sub(2)..=id + 1)
+                        barcode::fit_blend(
+                            &cells,
+                            read.fps,
+                            id.saturating_sub(2)..=id + 1,
+                            &mut self.tone,
+                        )
                     })
                     .filter(|b| b.dominant() == id);
                 Some(stamp(id, read.fps, StampSource::Barcode, blend))
@@ -194,6 +203,7 @@ impl StampReader {
                     &cells,
                     barcode_fps,
                     predicted.saturating_sub(SEARCH_FRAMES)..=predicted + SEARCH_FRAMES,
+                    &mut self.tone,
                 )?;
                 let id = blend.dominant();
                 self.anchor = Some((time, id));
@@ -244,6 +254,7 @@ impl StampReader {
             view,
             &grid,
             predicted.saturating_sub(SEARCH_FRAMES)..=predicted + SEARCH_FRAMES,
+            &mut self.tone,
         )?;
         if blend.rms > TRACK_RMS_FACTOR * reference.max(0.02) {
             return None;
@@ -317,6 +328,7 @@ impl StampReader {
                     template.fit_samples(
                         &raw,
                         predicted.saturating_sub(SEARCH_FRAMES)..=predicted + SEARCH_FRAMES,
+                        &mut self.tone,
                     )
                 })
                 .map(|blend| blend_stamp(template, &grid, blend)),
@@ -326,7 +338,7 @@ impl StampReader {
         // expected): decode the samples, thresholded against the code's own
         // black and white.
         let fitted = fitted.or_else(|| {
-            let stamp = decode_samples(&raw)?;
+            let stamp = decode_samples(&raw, self.tone.gamma())?;
             let found = qr::LocatedQr {
                 stamp,
                 corners: grid.corners,
@@ -379,6 +391,7 @@ impl StampReader {
                 view,
                 &grid,
                 id.saturating_sub(SEARCH_FRAMES)..=id + SEARCH_FRAMES,
+                &mut self.tone,
             )
             .filter(|b| b.dominant() == id)
         });
@@ -405,6 +418,7 @@ impl StampReader {
             view,
             grid,
             predicted.saturating_sub(SEARCH_FRAMES)..=predicted + SEARCH_FRAMES,
+            &mut self.tone,
         )?;
         let id = blend.dominant();
         self.anchor = Some((time, id));

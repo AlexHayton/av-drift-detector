@@ -257,50 +257,33 @@ pub fn word(frame_id: u32, fps: Option<FrameRate>) -> u64 {
 /// Fits the cells as a blend of two consecutive frames' words, the earlier
 /// one in `candidates`, as `pattern::qr_fit` does for QR codes. A
 /// frame caught mid-switch fails the CRC; this reads it, and measures the mix.
+/// Only a few cells change from one frame to the next, so the tone curve is
+/// often the capture's so far, from `tone` (which learns from the fit).
 pub fn fit_blend(
     cells: &[f32; BITS],
     fps: Option<FrameRate>,
     candidates: std::ops::RangeInclusive<u32>,
+    tone: &mut super::ToneCurve,
 ) -> Option<super::Blend> {
-    let bits = |word: u64| -> [f32; BITS] {
-        std::array::from_fn(|i| ((word >> (BITS - 1 - i)) & 1) as f32)
-    };
-    let fits: Vec<super::Blend> = candidates
-        .filter(|&m| m < MAX_FRAME_ID)
-        .map(|m| {
-            let (a, b) = (bits(word(m, fps)), bits(word(m + 1, fps)));
-            let (mut num, mut den) = (0.0f64, 0.0f64);
-            for i in 0..BITS {
-                let d = f64::from(b[i] - a[i]);
-                num += d * f64::from(cells[i] - a[i]);
-                den += d * d;
+    let light = |word: u64, i: usize| (word >> (BITS - 1 - i)) & 1 == 1;
+    let pair = |m: u32| {
+        (m < MAX_FRAME_ID).then(|| {
+            let (a, b) = (word(m, fps), word(m + 1, fps));
+            // The barcode is one row: a rolling shutter doesn't show across it.
+            let mut groups = super::blend::Cells::new(1);
+            for (i, &s) in cells.iter().enumerate() {
+                groups.add(0, s, light(a, i), light(b, i));
             }
-            let beta = if den > 0.0 {
-                (num / den).clamp(0.0, 1.0)
-            } else {
-                0.0
-            };
-            let sq: f64 = (0..BITS)
-                .map(|i| {
-                    let predicted = f64::from(a[i]) + beta * f64::from(b[i] - a[i]);
-                    (f64::from(cells[i]) - predicted).powi(2)
-                })
-                .sum();
-            super::Blend {
-                first: m,
-                weight_next: beta as f32,
-                slope: 0.0,
-                rms: (sq / BITS as f64).sqrt() as f32,
-                margin: 0.0,
-            }
+            groups
         })
-        .collect();
-    super::blend::choose(&fits)
+    };
+    super::blend::fit_candidates(candidates, pair, false, tone)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pattern::ToneCurve;
     use crate::pattern::canvas::LumaImage;
 
     fn rates() -> Vec<FrameRate> {
@@ -409,15 +392,64 @@ mod tests {
                 *o = (f32::from(x) * (1.0 - w) + f32::from(y) * w).round() as u8;
             }
             let cells = sample(&img.view()).unwrap();
-            let fit = fit_blend(&cells, Some(fps), 4090..=4100).unwrap();
+            let fit = fit_blend(&cells, Some(fps), 4090..=4100, &mut ToneCurve::default()).unwrap();
             assert_eq!(fit.first, 4095, "w {w}: {fit:?}");
             assert!((fit.weight_next - w).abs() < 0.02, "w {w}: {fit:?}");
         }
         // A clean frame: all the weight on one frame.
         let cells = sample(&frame(77).view()).unwrap();
-        let fit = fit_blend(&cells, Some(fps), 70..=80).unwrap();
+        let fit = fit_blend(&cells, Some(fps), 70..=80, &mut ToneCurve::default()).unwrap();
         assert_eq!(fit.dominant(), 77);
         assert!(!fit.is_mixed());
+    }
+
+    #[test]
+    fn fits_blends_through_a_tone_curve() {
+        use crate::pattern::blend::curves::{gamma22, mix_through};
+        let fps = FrameRate::new(30, 1).unwrap();
+        let frame = |id: u32| {
+            let mut img = LumaImage::new(640, 360, BLACK);
+            draw_guards(&mut img.canvas());
+            draw(&mut img.canvas(), pack(id, fps));
+            img
+        };
+        // Cells that went each way, at least two of each: (rises, falls).
+        let ways = |id: u32| {
+            let diff = pack(id, fps) ^ pack(id + 1, fps);
+            let rises = (diff & pack(id + 1, fps)).count_ones();
+            (rises, diff.count_ones() - rises)
+        };
+        let both = (1000..2000)
+            .find(|&id| ways(id).0 >= 2 && ways(id).1 >= 2)
+            .unwrap();
+        let one_way = (1000..2000).find(|&id| ways(id).1 == 0).unwrap();
+        for id in [both, one_way] {
+            for w in [0.3, 0.6] {
+                let img = mix_through(&frame(id), &frame(id + 1), w, gamma22);
+                let cells = sample(&img.view()).unwrap();
+                let candidates = id - 3..=id + 3;
+                // With the capture's curve known from earlier pictures.
+                let mut tone = ToneCurve::known(2.2);
+                let fit = fit_blend(&cells, Some(fps), candidates.clone(), &mut tone).unwrap();
+                assert_eq!(fit.first, id, "{id} w {w}: {fit:?}");
+                assert!(
+                    (f64::from(fit.weight_next) - w).abs() < 0.02,
+                    "{id} w {w}: {fit:?}"
+                );
+                // Without: only cells that went both ways show the curve.
+                let mut tone = ToneCurve::default();
+                let fit = fit_blend(&cells, Some(fps), candidates, &mut tone).unwrap();
+                if id == both {
+                    assert!((fit.gamma - 2.2).abs() < 0.2, "{id} w {w}: {fit:?}");
+                    assert!(
+                        (f64::from(fit.weight_next) - w).abs() < 0.02,
+                        "{id} w {w}: {fit:?}"
+                    );
+                } else {
+                    assert_eq!(fit.gamma, 1.0, "{id} w {w}: {fit:?}");
+                }
+            }
+        }
     }
 
     #[test]

@@ -100,6 +100,11 @@ export interface Blend {
   weightNext: number
   /** How much the weight grows from the code's top row to its bottom row. */
   slope: number
+  /**
+   * The camera's tone curve the fit allowed for, as a gamma: brightness
+   * taken as light to the power `1 / gamma` (1 if omitted: proportional to light).
+   */
+  gamma?: number
   /** Root-mean-square error of the fit (black 0, white 1). */
   rms: number
   /** The error of the best fit naming another frame, over `rms`. */
@@ -208,6 +213,11 @@ export interface DriftSummary {
   qrBlendFrames: number
   /** Frames that caught the display switching between two frames. */
   mixedFrames: number
+  /**
+   * The camera's tone curve those frames showed, as a gamma (about 2.2 for
+   * a phone; 1 where brightness is proportional to light).
+   */
+  toneGamma?: number
 }
 
 /** Drift measured at one captured video frame. */

@@ -324,7 +324,8 @@ fn a_small_code_in_a_big_frame_reads() {
 /// the camera takes a picture every `1/camera_fps` from `first`, each exposed
 /// for `exposure` from its timestamp, a rolling shutter starting each row of the
 /// picture `readout · row / height` later. Pictures that span a switch blend
-/// the two frames, row by row.
+/// the two frames, row by row, in light; `tone` then turns light (0 black,
+/// 1 white) into the picture's signal, as a camera's tone curve does.
 struct Camera {
     fps: f64,
     camera_fps: f64,
@@ -336,6 +337,21 @@ struct Camera {
     lens: Lens,
     blur: f64,
     noise: f64,
+    tone: fn(f64) -> f64,
+}
+
+/// A camera whose signal is proportional to light.
+fn linear(x: f64) -> f64 {
+    x
+}
+
+/// The sRGB curve, as most phones roughly use.
+fn srgb(x: f64) -> f64 {
+    if x <= 0.003_130_8 {
+        12.92 * x
+    } else {
+        1.055 * x.powf(1.0 / 2.4) - 0.055
+    }
 }
 
 impl Camera {
@@ -357,10 +373,12 @@ impl Camera {
                     pattern.frame(a);
                     pattern.frame(b);
                     let (fa, fb) = (&pattern.frames[&a], &pattern.frames[&b]);
+                    let light = |v: f64| ((v - 16.0) / 219.0).clamp(0.0, 1.0);
                     for x in 0..w {
                         let (sx, sy) = (self.lens)(x as f64, y as f64);
-                        let v = bilinear(fa, sx, sy) * (1.0 - after) + bilinear(fb, sx, sy) * after;
-                        img.data[y * w + x] = v.round() as u8;
+                        let mixed = light(bilinear(fa, sx, sy)) * (1.0 - after)
+                            + light(bilinear(fb, sx, sy)) * after;
+                        img.data[y * w + x] = (16.0 + 219.0 * (self.tone)(mixed)).round() as u8;
                     }
                 }
                 if self.blur > 0.0 {
@@ -390,6 +408,15 @@ fn handheld(w: usize, h: usize) -> Lens {
 
 #[test]
 fn a_camera_at_another_rate_is_timed_from_blends() {
+    camera_at_another_rate(linear);
+}
+
+#[test]
+fn a_camera_at_another_rate_is_timed_through_its_tone_curve() {
+    camera_at_another_rate(srgb);
+}
+
+fn camera_at_another_rate(tone: fn(f64) -> f64) {
     // 24 fps filming 25 fps, 1/50 s exposures, a 12 ms rolling shutter,
     // keystoned, a little soft and noisy.
     let mut pattern = Pattern::new("25", 1280, 720);
@@ -405,6 +432,7 @@ fn a_camera_at_another_rate_is_timed_from_blends() {
         lens: handheld(w, h),
         blur: 1.0,
         noise: 8.0,
+        tone,
     };
     let delay = 0.245;
     let video = read_all(camera.film(&mut pattern, 4.0));
@@ -438,6 +466,7 @@ fn a_camera_locked_to_the_pattern_reports_an_honest_uncertainty() {
             lens: handheld(w, h),
             blur: 0.8,
             noise: 6.0,
+            tone: linear,
         };
         let delay = 0.23;
         let video = read_all(camera.film(&mut pattern, 3.0));
@@ -457,12 +486,32 @@ fn a_camera_locked_to_the_pattern_reports_an_honest_uncertainty() {
 
 #[test]
 fn a_locked_camera_that_reports_its_exposure_is_timed_to_a_millisecond() {
+    locked_camera_reporting_its_exposure(
+        linear,
+        &[(0.2 + 0.7 / 30.0, 0.025), (0.2 + 0.4 / 30.0, 0.03)],
+    );
+}
+
+#[test]
+fn a_locked_camera_is_timed_to_a_millisecond_through_its_tone_curve() {
+    // Caught about three quarters of the way through the switch, and about a
+    // third. (Caught at half, the code's top rows show one frame and its
+    // bottom rows the next, and none decodes to start from.)
+    locked_camera_reporting_its_exposure(
+        srgb,
+        &[(0.2 + 0.7 / 30.0, 0.025), (0.2 + 0.46 / 30.0, 0.02)],
+    );
+}
+
+/// A camera locked to the pattern's rate, starting each exposure (of the
+/// given length) at the given time, and reporting it.
+fn locked_camera_reporting_its_exposure(tone: fn(f64) -> f64, timings: &[(f64, f64)]) {
     // As above, but the camera says how long each exposure was and how long
     // its rolling shutter takes to read out, as phones do: the frames caught
     // mid-switch then time the display without guessing the exposure.
     let mut pattern = Pattern::new("30", 1280, 720);
     let (w, h) = pattern.size();
-    for (first, exposure) in [(0.2 + 0.7 / 30.0, 0.025), (0.2 + 0.4 / 30.0, 0.03)] {
+    for &(first, exposure) in timings {
         let camera = Camera {
             fps: 30.0,
             camera_fps: 30.0,
@@ -474,6 +523,7 @@ fn a_locked_camera_that_reports_its_exposure_is_timed_to_a_millisecond() {
             lens: handheld(w, h),
             blur: 0.8,
             noise: 6.0,
+            tone,
         };
         let delay = 0.23;
         let mut video = read_all(camera.film(&mut pattern, 3.0));

@@ -186,16 +186,46 @@ fn a_filmed_screen_reads_the_same() {
     let linked = analyze(&phone, &AnalyzeOptions::default()).unwrap();
     let programs = ffmpeg_cli::analyze(&phone, &AnalyzeOptions::default()).unwrap();
     assert_eq!(programs.capture, CaptureMode::Camera);
-    // The programs convert to grey (full range) where the linked path reads
-    // the Y plane, so a frame on the edge of readability can go either way.
-    let (a, b) = (linked.summary.measured, programs.summary.measured);
-    assert!(a.abs_diff(b) <= 2 && b > 100, "measured {a} vs {b}");
-    let (m, n) = (
-        linked.summary.mean_ms.unwrap(),
-        programs.summary.mean_ms.unwrap(),
+    // Both read the same luma, so they agree exactly.
+    assert_same(&linked, &programs, "filmed screen");
+    assert!(
+        programs.summary.measured > 100,
+        "{}",
+        programs.summary_text()
     );
-    assert!((m - n).abs() < 0.05, "mean {m} vs {n}");
+    let n = programs.summary.mean_ms.unwrap();
     assert!((n - 40.0).abs() < 2.0, "mean {n}");
+}
+
+/// Video that isn't 8-bit YUV is converted on the way in, as the linked
+/// decoder converts it.
+#[test]
+fn ten_bit_and_rgb_video_read() {
+    if !have_programs() {
+        return;
+    }
+    quiet();
+    let dir = tempfile::tempdir().unwrap();
+    let source = dir.path().join("source.mp4");
+    generate(&options(&source, "30", 3.0, 40.0), |_| {}).unwrap();
+    for (name, codec) in [
+        ("ten.mkv", ["-c:v", "libx264", "-pix_fmt", "yuv420p10le"]),
+        ("rgb.mkv", ["-c:v", "libx264rgb", "-pix_fmt", "rgb24"]),
+    ] {
+        let path = dir.path().join(name);
+        let status = Command::new("ffmpeg")
+            .args(["-loglevel", "error", "-y", "-i"])
+            .arg(&source)
+            .args(codec)
+            .args(["-crf", "10", "-c:a", "copy"])
+            .arg(&path)
+            .status()
+            .unwrap();
+        assert!(status.success(), "{name}");
+        let programs = ffmpeg_cli::analyze(&path, &AnalyzeOptions::default()).unwrap();
+        assert_eq!(programs.frames.len(), 90, "{name}");
+        assert_drift(&programs, 40.0, 0.5, name);
+    }
 }
 
 #[test]

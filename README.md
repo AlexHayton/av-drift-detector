@@ -95,9 +95,10 @@ av-drift analyze phone-video.mov
 
 ```text
 Pattern  30 fps (from qr), 1280x720
-Capture  camera; display timing from 237 frames caught mid-switch, known to ±1.99 ms
-         (exposure measured at 33.2 ms)
-Drift    mean +40.09 ms  median +40.09 ms  min +39.83 ms  max +40.30 ms  stddev 0.07 ms
+Capture  camera; display timing from 237 frames caught mid-switch, known to ±1.98 ms
+         (exposure measured at 33.1 ms)
+         (tone curve measured at gamma 2.2)
+Drift    mean +40.14 ms  median +40.14 ms  min +39.85 ms  max +40.40 ms  stddev 0.09 ms
 ```
 
 See the [camera guide](docs/camera.md) for tips on getting good measurements.

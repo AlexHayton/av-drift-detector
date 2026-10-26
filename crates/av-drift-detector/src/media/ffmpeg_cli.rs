@@ -393,6 +393,20 @@ impl Decoder {
 
 type Frames = (Vec<VideoSample>, Option<u32>, Option<u32>);
 
+/// The video filters: each frame's timestamp and size (without the
+/// checksums `showinfo` computes by default, which cost far more than
+/// decoding), then its luma plane. Frames in the pixel formats the linked
+/// decoder reads its luma from directly (`decode::has_luma_plane`, apart
+/// from NV12 and NV21, which `extractplanes` doesn't take) pass through
+/// untouched, so both paths see the same pixels. Anything else, such as
+/// 10-bit or RGB video, is converted to 8-bit YUV first. (Converting to
+/// grey instead would also stretch the luma to full range, clipping a
+/// camera's darkest and brightest pixels.)
+const VIDEO_FILTERS: &str = "showinfo=checksum=0,\
+    format=pix_fmts=yuv420p|yuvj420p|yuv422p|yuvj422p|yuv444p|yuvj444p|yuv440p|yuvj440p\
+    |yuv411p|yuv410p|yuva420p|gray,\
+    extractplanes=y";
+
 fn read_video(
     path: &Path,
     stream: &VideoStream,
@@ -410,9 +424,7 @@ fn read_video(
             "-fps_mode",
             "passthrough",
             "-vf",
-            "showinfo",
-            "-pix_fmt",
-            "gray",
+            VIDEO_FILTERS,
             "-f",
             "rawvideo",
             "pipe:1",

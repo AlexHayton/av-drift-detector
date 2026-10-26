@@ -73,6 +73,9 @@ class Blend(TypedDict):
     weight_next: float
     #: How much the weight grows from the code's top row to its bottom row (rolling shutter).
     slope: float
+    #: The camera's tone curve the fit allowed for, as a gamma: brightness taken as
+    #: light to the power ``1 / gamma`` (1 if omitted: proportional to light).
+    gamma: float
     #: Root-mean-square error of the fit (black 0, white 1).
     rms: float
     #: The error of the best fit naming another frame, over ``rms``.
@@ -143,6 +146,9 @@ class DriftSummary(TypedDict):
     qr_blend_frames: int
     #: Frames that caught the display switching between two frames.
     mixed_frames: int
+    #: The camera's tone curve those frames showed, as a gamma (about 2.2 for a
+    #: phone; 1 where brightness is proportional to light).
+    tone_gamma: float | None
 
 
 class AlternativeReading(TypedDict):

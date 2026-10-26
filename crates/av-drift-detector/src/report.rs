@@ -114,6 +114,11 @@ pub struct DriftSummary {
     pub qr_blend_frames: usize,
     /// Frames that caught the display switching between two frames.
     pub mixed_frames: usize,
+    /// The tone curve those frames showed, as a gamma (their median):
+    /// brightness was light to the power `1/tone_gamma`. About 2.2 for a
+    /// phone's camera; 1 where brightness is proportional to light, as in a
+    /// digital copy. The blends were read through it.
+    pub tone_gamma: Option<f64>,
 }
 
 /// What a capture would measure if it were the other kind (see
@@ -281,6 +286,9 @@ impl DriftReport {
                         );
                     }
                     _ => {}
+                }
+                if let Some(g) = s.tone_gamma {
+                    let _ = writeln!(out, "         (tone curve measured at gamma {g:.1})");
                 }
             }
             (CaptureMode::Camera, Some(u)) => {

@@ -174,6 +174,9 @@ def test_stamp_reader_times_a_camera_from_blended_frames() -> None:
     assert report["video_timing"] == "blend"
     assert report["exposure_ms"] == pytest.approx(20, abs=1.5)
     assert report["summary"]["mixed_frames"] == len(blended)
+    # Mixed in proportion to light: no tone curve to allow for.
+    assert report["summary"]["tone_gamma"] == pytest.approx(1, abs=0.1)
+    assert all(isinstance(s["blend"]["gamma"], float) for s in blended)
     assert report["summary"]["mean_ms"] == pytest.approx(12, abs=1)
     assert report["video_timing_uncertainty_ms"] is not None
     assert any(f["video_blend"] is not None for f in report["frames"])

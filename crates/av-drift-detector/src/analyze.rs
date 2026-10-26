@@ -22,7 +22,7 @@ use crate::audio::code::ID_MODULUS;
 use crate::audio::{AudioCell, CellDetector, ToneCode};
 use crate::camera::{DisplayTiming, Exposure, Observation, display_timing, phase_consistency};
 use crate::media::{AudioTrack, MediaScan};
-use crate::pattern::StampSource;
+use crate::pattern::{Blend, StampSource};
 use crate::report::{
     AlternativeReading, CaptureMode, DriftReport, DriftSummary, FrameDrift, FrameStatus, median,
 };
@@ -154,10 +154,13 @@ pub fn analyze_scan(scan: &MediaScan, opts: &AnalyzeOptions, input: String) -> R
         .iter()
         .filter(|v| v.stamp.is_some_and(|s| s.source == StampSource::QrBlend))
         .count();
-    summary.mixed_frames = observations
+    let mixed: Vec<Blend> = observations
         .iter()
-        .filter(|o| o.blend.is_some_and(|b| b.is_mixed()))
-        .count();
+        .filter_map(|o| o.blend.filter(Blend::is_mixed))
+        .collect();
+    summary.mixed_frames = mixed.len();
+    summary.tone_gamma =
+        (!mixed.is_empty()).then(|| median(mixed.iter().map(|b| f64::from(b.gamma)).collect()));
     let exposure = display.as_ref().and_then(|d| d.exposure);
     Ok(DriftReport {
         input,

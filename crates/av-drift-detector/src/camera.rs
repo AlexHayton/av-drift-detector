@@ -449,6 +449,7 @@ mod tests {
             first,
             weight_next: w as f32,
             slope: 0.0,
+            gamma: 1.0,
             rms: 0.05,
             margin: 3.0,
         }

@@ -153,6 +153,7 @@ fn stamp_dict<'py>(py: Python<'py>, s: FrameStamp) -> PyResult<Bound<'py, PyDict
             d.set_item("first", b.first)?;
             d.set_item("weight_next", f64::from(b.weight_next))?;
             d.set_item("slope", f64::from(b.slope))?;
+            d.set_item("gamma", f64::from(b.gamma))?;
             d.set_item("rms", f64::from(b.rms))?;
             d.set_item("margin", f64::from(b.margin))?;
             Ok(d)
@@ -204,6 +205,7 @@ fn stamp_from(obj: &Bound<'_, PyAny>) -> PyResult<avd::pattern::FrameStamp> {
                 first: b.get_item("first")?.extract()?,
                 weight_next: field("weight_next")?,
                 slope: optional(&b, "slope")?.map_or(Ok(0.0), |v| v.extract())?,
+                gamma: optional(&b, "gamma")?.map_or(Ok(1.0), |v| v.extract())?,
                 rms: optional(&b, "rms")?.map_or(Ok(0.0), |v| v.extract())?,
                 margin: optional(&b, "margin")?.map_or(Ok(f32::INFINITY), |v| v.extract())?,
             })

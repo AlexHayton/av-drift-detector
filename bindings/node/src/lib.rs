@@ -89,6 +89,9 @@ pub struct DriftSummary {
     pub qr_blend_frames: u32,
     /// Frames that caught the display switching between two frames.
     pub mixed_frames: u32,
+    /// The camera's tone curve those frames showed, as a gamma (about 2.2 for
+    /// a phone; 1 where brightness is proportional to light).
+    pub tone_gamma: Option<f64>,
 }
 
 /// What a capture would measure if it were the other kind (`DriftReport.alternative`).
@@ -202,6 +205,7 @@ impl From<avd::DriftReport> for DriftReport {
                 qr_located_unread: count(s.qr_located_unread),
                 qr_blend_frames: count(s.qr_blend_frames),
                 mixed_frames: count(s.mixed_frames),
+                tone_gamma: s.tone_gamma,
             },
             frames: r
                 .frames
@@ -448,6 +452,9 @@ pub struct Blend {
     pub weight_next: f64,
     /// How much the weight grows from the code's top row to its bottom row.
     pub slope: f64,
+    /// The camera's tone curve the fit allowed for, as a gamma: brightness
+    /// taken as light to the power `1 / gamma` (1 if omitted: proportional to light).
+    pub gamma: Option<f64>,
     /// Root-mean-square error of the fit (black 0, white 1).
     pub rms: f64,
     /// The error of the best fit naming another frame, over `rms`.
@@ -487,6 +494,7 @@ impl From<avd::pattern::FrameStamp> for FrameStamp {
                 first: b.first,
                 weight_next: f64::from(b.weight_next),
                 slope: f64::from(b.slope),
+                gamma: Some(f64::from(b.gamma)),
                 rms: f64::from(b.rms),
                 margin: f64::from(b.margin),
             }),
@@ -526,6 +534,7 @@ impl FrameStamp {
                 first: b.first,
                 weight_next: b.weight_next as f32,
                 slope: b.slope as f32,
+                gamma: b.gamma.unwrap_or(1.0) as f32,
                 rms: b.rms as f32,
                 margin: b.margin as f32,
             }),

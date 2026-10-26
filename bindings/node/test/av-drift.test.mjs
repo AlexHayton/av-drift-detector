@@ -170,6 +170,9 @@ test('StampReader times a camera from blended frames', async () => {
   assert.equal(report.videoTiming, 'blend')
   assert.ok(Math.abs(report.exposureMs - 20) < 1.5, `exposure ${report.exposureMs} ms`)
   assert.equal(report.summary.mixedFrames, blended.length)
+  // Mixed in proportion to light: no tone curve to allow for.
+  assert.ok(Math.abs(report.summary.toneGamma - 1) < 0.1, `gamma ${report.summary.toneGamma}`)
+  assert.ok(blended.every((s) => typeof s.blend.gamma === 'number'))
   assert.ok(Math.abs(report.summary.meanMs - 12) < 1, `mean ${report.summary.meanMs} ms`)
   assert.ok(report.frames.some((f) => f.videoBlend !== undefined && f.videoBlend !== null))
 })

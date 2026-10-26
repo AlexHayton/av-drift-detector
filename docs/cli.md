@@ -79,7 +79,7 @@ The text summary's lines:
 |------|---------|
 | `Pattern` | The pattern's frame rate and where it came from, and the capture's frame size. |
 | `Window` | The analysis window and how many frames it holds. |
-| `Capture` | Camera captures: how the display's timing was found (from frames caught mid-switch, or from frame numbers), how precisely, and the camera's exposure where it could be measured. Also any display judder. |
+| `Capture` | Camera captures: how the display's timing was found (from frames caught mid-switch, or from frame numbers), how precisely, the camera's exposure where it could be measured, and its tone curve where frames caught mid-switch measured it. Also any display judder. |
 | `Note` | The capture could be either a digital copy or a camera locked to the pattern's rate (a camera on a stand): what the other reading would be. |
 | `Drift` | Mean, median, range and standard deviation of the drift, and the mean in frames. |
 | `Skew` | The slope of drift against time. |
@@ -130,7 +130,8 @@ For example, `av-drift analyze sync.mp4 --json --offset 2 --duration 0.02` (a on
     "audio_snr_db": 67.87691497802734,
     "qr_located_unread": 0,
     "qr_blend_frames": 0,
-    "mixed_frames": 0
+    "mixed_frames": 0,
+    "tone_gamma": null
   },
   "frames": [
     {
@@ -171,6 +172,7 @@ For example, `av-drift analyze sync.mp4 --json --offset 2 --duration 0.02` (a on
 | `summary.qr_located_unread` | Frames where a QR code was found but couldn't be read. |
 | `summary.qr_blend_frames` | Frames read by fitting the QR code against the frames' codes (blended between two frames, too blurred to decode, or tracked from the frame before). |
 | `summary.mixed_frames` | Frames that caught the display switching between two frames. |
+| `summary.tone_gamma` | The tone curve those frames showed, as a gamma: brightness was light to the power `1/tone_gamma`. About 2.2 for a phone's camera, 1 for blends in a digital copy. The blends were read through it. `null` without mixed frames. |
 | `frames[].status` | `ok`, `no_video_stamp` or `no_audio`. |
 | `frames[].stamp_source` | `barcode`, `barcode_blend`, `qr` or `qr_blend` (see the per-frame table's notes). |
 | `frames[].video_blend` | How far the picture had switched to the next frame, 0 to 1, where that was measured: 0 for a clean frame. |

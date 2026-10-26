@@ -15,7 +15,7 @@ pub mod timecode;
 
 use serde::Serialize;
 
-pub use self::blend::Blend;
+pub use self::blend::{Blend, ToneCurve};
 use self::canvas::{BLACK, GREY, LumaCanvas, LumaImage, LumaView, Rect, WHITE};
 use self::dancer::Dancer;
 pub use self::layout::Layout;
