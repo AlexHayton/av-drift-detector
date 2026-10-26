@@ -209,8 +209,8 @@ fn ten_bit_and_rgb_video_read() {
     let source = dir.path().join("source.mp4");
     generate(&options(&source, "30", 3.0, 40.0), |_| {}).unwrap();
     for (name, codec) in [
-        ("ten.mkv", ["-c:v", "libx264", "-pix_fmt", "yuv420p10le"]),
-        ("rgb.mkv", ["-c:v", "libx264rgb", "-pix_fmt", "rgb24"]),
+        ("ten.mp4", ["-c:v", "libx264", "-pix_fmt", "yuv420p10le"]),
+        ("rgb.mp4", ["-c:v", "libx264rgb", "-pix_fmt", "rgb24"]),
     ] {
         let path = dir.path().join(name);
         let status = Command::new("ffmpeg")
