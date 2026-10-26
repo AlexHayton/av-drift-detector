@@ -4,6 +4,8 @@ All notable changes are listed here. The format follows [Keep a Changelog](https
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-10-26
+
 ### Fixed
 
 - **Camera blends are read through the camera's tone curve.** A camera mixes two frames in light, then records brightness through its tone curve (about light to the power 1/2.2 for a phone), but the blend fits took brightness as proportional to light. That pulled each frame's mix towards a half by up to 0.1, made measured exposures a quarter or more too long, and used up much of the fits' error allowance. The fits now model the curve as a gamma and measure it from the frame itself: modules that went from dark to light and from light to dark read differently unless brightness is proportional to light. Frames that can't show it (a mix close to one frame, or a barcode with few changed cells) use the capture's recent median. In simulation, a 25 fps camera filming 30 fps was 6.5 ms out (claiming ±2.5 ms) and is now within 0.2 ms, with its exposure measured at 33.1 ms rather than 46.5 for a true 33.3. Blended QR codes are also decoded from their own samples at half the light, so a camera's mixes near a half (which both read about 0.7) still decode. Reports gain `summary.tone_gamma`, and the text summary says `tone curve measured at gamma x`. Stamps' `blend` gains `gamma` in the Node.js and Python packages (optional when passing stamps in; 1 if omitted).
@@ -95,7 +97,8 @@ First release.
 - Text, JSON and CSV reports, analysis windows (`--offset`, `--duration`), and `--max-drift` for use in CI.
 - The `av_drift_detector` library, with FFmpeg-free pattern rendering, audio synthesis and audio detection.
 
-[Unreleased]: https://github.com/AlexHayton/av-drift-detector/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/AlexHayton/av-drift-detector/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/AlexHayton/av-drift-detector/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/AlexHayton/av-drift-detector/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/AlexHayton/av-drift-detector/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/AlexHayton/av-drift-detector/compare/v0.2.1...v0.3.0

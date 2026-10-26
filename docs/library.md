@@ -2,7 +2,7 @@
 
 ```toml
 [dependencies]
-av-drift-detector = { version = "0.5", default-features = false, features = ["ffmpeg", "qr-decode"] }
+av-drift-detector = { version = "0.6", default-features = false, features = ["ffmpeg", "qr-decode"] }
 ```
 
 | Feature | Default | What it adds |
